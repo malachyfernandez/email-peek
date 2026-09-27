@@ -1,0 +1,38 @@
+[
+  {
+    "property": "mod.gmailpeek.account",
+    "label": "Fallback Gmail account index — used only when a tab's URL has no /u/N/ in it",
+    "type": "string",
+    "defaultValue": "0"
+  },
+  {
+    "property": "mod.gmailpeek.max_items",
+    "label": "Max emails shown in the preview",
+    "type": "string",
+    "defaultValue": "6"
+  },
+  {
+    "property": "mod.gmailpeek.hover_delay",
+    "label": "Hover delay before the preview opens (ms)",
+    "type": "string",
+    "defaultValue": "400"
+  },
+  {
+    "property": "mod.gmailpeek.hide_delay",
+    "label": "Delay before the preview closes after the mouse leaves (ms)",
+    "type": "string",
+    "defaultValue": "150"
+  },
+  {
+    "property": "mod.gmailpeek.show_badge",
+    "label": "Show an unread-count badge on the tab icon",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.gmailpeek.debug",
+    "label": "Log debug info to the Browser Console (Cmd+Shift+J)",
+    "type": "checkbox",
+    "defaultValue": true
+  }
+]

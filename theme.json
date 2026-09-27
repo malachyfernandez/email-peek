@@ -1,0 +1,28 @@
+{
+  "id": "gmail-peek",
+  "name": "Gmail Peek",
+  "description": "Arc-style inbox preview when hovering a pinned or essential Gmail tab. Shows recent unread emails via Gmail's Atom feed — no API key needed.",
+  "author": "malachyfernandez + Devin",
+  "version": "1.3.0",
+  "homepage": "https://github.com/malachyfernandez/gmail-peek",
+  "readme": "https://raw.githubusercontent.com/malachyfernandez/gmail-peek/main/README.md",
+  "ai": "partial",
+  "scripts": {
+    "gmail-peek.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ]
+    }
+  },
+  "preferences": "preferences.json",
+  "fork": [
+    "zen"
+  ],
+  "tags": [
+    "productivity",
+    "arc",
+    "gmail"
+  ],
+  "createdAt": "2026-09-27",
+  "updatedAt": "2026-09-27"
+}
