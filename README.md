@@ -1,3 +1,5 @@
+![Gmail Peek](cover.jpg)
+
 # Gmail Peek
 
 Arc-style Gmail preview for Zen Browser. Hover your pinned/essential Gmail
