@@ -308,9 +308,15 @@
       this.observer.observe(root, {
         subtree: true,
         attributes: true,
-        attributeFilter: ["zen-essential", "pinned"],
+        attributeFilter: ["zen-essential", "pinned", "data-zen-url", "data-zen-pinned-url", "label", "title"],
         childList: true,
       });
+
+      try {
+        gBrowser.tabContainer?.addEventListener("TabAttrModified", () => this.scanTabs());
+        gBrowser.tabContainer?.addEventListener("TabPinned", () => this.scanTabs());
+        gBrowser.tabContainer?.addEventListener("TabUnpinned", () => this.scanTabs());
+      } catch {}
 
       window.addEventListener("unload", () => this.destroy(), { once: true });
 
@@ -342,20 +348,80 @@
     // ---------- tab detection ----------
 
     tabUrl(tab) {
-      return (
-        tab.linkedBrowser?.currentURI?.spec ||
-        tab._zenPinnedInitialState?.entry?.url ||
-        tab.getAttribute?.("data-zen-url") ||
-        ""
-      );
+      if (!tab) return "";
+      let url = "";
+      try {
+        if (typeof window.gBrowser?.getTabURL === "function") {
+          url = window.gBrowser.getTabURL(tab);
+        }
+      } catch {}
+      if (url && typeof url === "string" && url !== "about:blank") return url;
+
+      const candidates = [
+        tab.getAttribute?.("data-zen-url"),
+        tab.getAttribute?.("data-zen-pinned-url"),
+        tab.getAttribute?.("zen-tab-url"),
+        tab.getAttribute?.("url"),
+        tab._zenPinnedInitialState?.entry?.url,
+        tab.linkedBrowser?.currentURI?.spec,
+        tab.linkedBrowser?.registeredOpenURI?.spec,
+        tab.linkedBrowser?.userTypedValue,
+      ];
+      for (const c of candidates) {
+        if (typeof c === "string" && c && c !== "about:blank") return c;
+      }
+      return "";
+    }
+
+    containerForTab(tab) {
+      if (!tab) return 0;
+      if (tab.userContextId !== undefined && tab.userContextId !== null) {
+        const id = parseInt(tab.userContextId, 10);
+        if (!isNaN(id) && id > 0) return id;
+      }
+      const attr = tab.getAttribute?.("usercontextid") || tab.linkedBrowser?.getAttribute?.("usercontextid");
+      if (attr) {
+        const id = parseInt(attr, 10);
+        if (!isNaN(id) && id > 0) return id;
+      }
+      try {
+        const wsId = tab.getAttribute?.("zen-workspace-id") || window.gZenWorkspaces?.activeWorkspace;
+        if (wsId && window.gZenWorkspaces) {
+          const ws = window.gZenWorkspaces.getWorkspaceFromId(wsId);
+          if (ws?.containerTabId) {
+            return parseInt(ws.containerTabId, 10);
+          }
+        }
+      } catch {}
+      try {
+        const tooltip = tab.getAttribute?.("tooltiptext") || tab.getAttribute?.("label") || "";
+        if (window.ContextualIdentityService) {
+          for (const ident of window.ContextualIdentityService.getPublicIdentities()) {
+            if (ident.name && (tooltip.endsWith(ident.name) || tooltip.includes(`(${ident.name})`) || tooltip.includes(` ${ident.name}`))) {
+              return ident.userContextId;
+            }
+          }
+        }
+      } catch {}
+      return 0;
+    }
+
+    cacheKeyForTab(tab) {
+      const acct = this.accountForTab(tab);
+      const containerId = this.containerForTab(tab);
+      return `${acct}@${containerId}`;
     }
 
     // Which Gmail account (/u/N/) a tab belongs to. Falls back to the
     // mod.gmailpeek.account pref when the URL carries no index.
     accountForTab(tab) {
       const specs = [
+        this.tabUrl(tab),
         tab._zenPinnedInitialState?.entry?.url,
         tab.linkedBrowser?.currentURI?.spec,
+        tab.getAttribute?.("data-zen-url"),
+        tab.getAttribute?.("data-zen-pinned-url"),
+        tab.getAttribute?.("zen-tab-url"),
       ];
       for (const spec of specs) {
         const m = typeof spec === "string"
@@ -368,18 +434,36 @@
 
     isGmailTab(tab) {
       if (!tab) return false;
+      const requirePinned = bPref("mod.gmailpeek.require_pinned", false);
       const pinnedLike =
         tab.pinned || tab.hasAttribute("zen-essential") || tab.hasAttribute("pinned");
-      if (!pinnedLike) return false;
-      const specs = [
-        tab._zenPinnedInitialState?.entry?.url,
-        tab.linkedBrowser?.currentURI?.spec,
-      ];
-      return specs.some(
-        spec =>
-          typeof spec === "string" &&
-          /^https?:\/\/mail\.google\.com\//.test(spec)
-      );
+      if (requirePinned && !pinnedLike) return false;
+
+      const url = this.tabUrl(tab);
+      if (url && /^https?:\/\/mail\.google\.com\//i.test(url)) {
+        return true;
+      }
+
+      // Check tab label and tooltip (vital for workspace and lazy/unloaded tabs)
+      const label = tab.getAttribute?.("label") || tab.label || "";
+      const tooltip =
+        tab.getAttribute?.("tooltiptext") ||
+        tab.getAttribute?.("title") ||
+        "";
+      if (
+        /@gmail\.com| - Gmail|\bGmail\b/i.test(label) ||
+        /@gmail\.com| - Gmail|\bGmail\b/i.test(tooltip)
+      ) {
+        return true;
+      }
+
+      // Also check image / favicon URL if present
+      const image = tab.getAttribute?.("image") || tab.image || "";
+      if (/mail\.google\.com|google\.com.*mail/i.test(image)) {
+        return true;
+      }
+
+      return false;
     }
 
     scanTabs() {
@@ -472,43 +556,70 @@
 
     // ---------- feed ----------
 
-    // The mod fetches from the chrome context, whose cookie jar is the
-    // DEFAULT one — a Gmail session that lives inside a container tab or a
-    // private window is invisible to it and the feed 401s. Pass the tab's
-    // own cookieJarSettings (and, when the tab is a live google page, its
-    // principal so SameSite=Lax cookies attach) so the request rides the
-    // same jar the tab uses.
-    jarInitFor(tab) {
-      const init = { credentials: "include", cache: "no-cache" };
-      try {
-        const bc = tab?.linkedBrowser?.browsingContext;
-        const cjs =
-          bc?.cookieJarSettings || bc?.currentWindowGlobal?.cookieJarSettings;
-        if (cjs) {
-          init.cookieJarSettings = cjs;
-          const ucid = cjs.originAttributes?.userContextId;
-          if (ucid) init._ucid = ucid; // diagnostic only
-        }
-        const tp = tab?.linkedBrowser?.contentPrincipal;
-        if (tp && /(^|\.)google\.com$/i.test(tp.asciiHost || "")) {
-          init.triggeringPrincipal = tp;
-        }
-      } catch {}
-      return init;
-    }
+    async fetchFeed(acct, containerId = 0) {
+      const url = feedUrl(acct);
+      let text;
+      if (containerId > 0) {
+        text = await new Promise((resolve, reject) => {
+          try {
+            const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
+            const uri = Services.io.newURI(url);
+            const principal = Services.scriptSecurityManager.createContentPrincipal(
+              uri,
+              { userContextId: containerId }
+            );
+            const channel = NetUtil.newChannel({
+              uri,
+              contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
+              loadingPrincipal: principal,
+              securityFlags:
+                Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL |
+                Ci.nsILoadInfo.SEC_COOKIES_INCLUDE,
+              triggeringPrincipal: principal,
+            }).QueryInterface(Ci.nsIHttpChannel);
 
-    async fetchFeed(acct, tab) {
-      const init = this.jarInitFor(tab);
-      const res = await fetch(feedUrl(acct), init);
-      if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
+            channel.setRequestHeader("Cache-Control", "no-cache", false);
+
+            NetUtil.asyncFetch(channel, (inputStream, status, request) => {
+              if (!Components.isSuccessCode(status)) {
+                reject(new Error(`Network error (${status})`));
+                return;
+              }
+              try {
+                const http = request.QueryInterface(Ci.nsIHttpChannel);
+                if (http.responseStatus === 401 || http.responseStatus === 403) {
+                  reject(new Error("signed-out"));
+                  return;
+                }
+                if (http.responseStatus >= 400) {
+                  reject(new Error(`HTTP ${http.responseStatus}`));
+                  return;
+                }
+                const data = NetUtil.readInputStreamToString(inputStream, inputStream.available(), { charset: "utf-8" });
+                resolve(data);
+              } catch (e) {
+                reject(e);
+              }
+            });
+          } catch (err) {
+            reject(err);
+          }
+        });
+      } else {
+        const res = await fetch(url, {
+          credentials: "include",
+          cache: "no-cache",
+        });
+        if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
+          throw new Error("signed-out");
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        text = await res.text();
+      }
+
+      if (/ServiceLogin|accounts\.google\.com/.test(text)) {
         throw new Error("signed-out");
       }
-      if (!res.ok) {
-        throw new Error(
-          `HTTP ${res.status}${init._ucid ? ` · ctx${init._ucid}` : ""}`
-        );
-      }
-      const text = await res.text();
       const doc = new DOMParser().parseFromString(text, "text/xml");
       if (doc.getElementsByTagName("parsererror").length) {
         throw new Error("signed-out");
@@ -532,38 +643,39 @@
       return { count, entries };
     }
 
-    getFeed(acct, force = false, tab = null) {
-      let cache = this.caches.get(acct);
+    getFeed(acct, containerId = 0, force = false) {
+      const key = `${acct}@${containerId}`;
+      let cache = this.caches.get(key);
       if (!cache) {
         cache = { t: 0, data: null, error: null };
-        this.caches.set(acct, cache);
+        this.caches.set(key, cache);
       }
       if (!force && Date.now() - cache.t < 45000) {
         return Promise.resolve(cache);
       }
-      if (!this.inflights.has(acct)) {
+      if (!this.inflights.has(key)) {
         this.inflights.set(
-          acct,
-          this.fetchFeed(acct, tab)
+          key,
+          this.fetchFeed(acct, containerId)
             .then(data => {
               const t = Date.now();
-              this.caches.set(acct, { t, refreshedAt: t, data, error: null });
+              this.caches.set(key, { t, refreshedAt: t, data, error: null });
             })
             .catch(err => {
-              this.caches.set(acct, {
+              this.caches.set(key, {
                 t: Date.now(),
                 refreshedAt: cache.refreshedAt || (cache.data ? cache.t : 0),
                 data: null,
                 error: String(err?.message || err),
               });
             })
-            .then(() => this.caches.get(acct))
+            .then(() => this.caches.get(key))
             .finally(() => {
-              this.inflights.delete(acct);
+              this.inflights.delete(key);
             })
         );
       }
-      return this.inflights.get(acct);
+      return this.inflights.get(key);
     }
 
     // ---------- panel ----------
@@ -592,26 +704,30 @@
     async show(tab) {
       this.ensurePanel();
       const acct = this.accountForTab(tab);
-      const cached = this.caches.get(acct);
+      const key = this.cacheKeyForTab(tab);
+      const cached = this.caches.get(key);
 
       // Show what we have immediately — only cold cache gets the loader.
       if (cached?.data || cached?.error) {
-        this.render(cached, acct);
+        this.render(cached, acct, tab);
       } else {
         this.renderLoading();
       }
 
-      const r = tab.getBoundingClientRect();
-      const sx = window.mozInnerScreenX ?? window.screenX;
-      const sy = window.mozInnerScreenY ?? window.screenY;
-      const x = sx + r.right + 6;
-      const y = sy + r.top;
       if (this.panel.state === "closed") {
         try {
-          this.panel.openPopupAtScreen(x, y, false);
-        } catch (err) {
-          console.warn(TAG, "openPopupAtScreen failed, trying anchor:", err);
           this.panel.openPopup(tab, "after_start", 4, 0, false, false);
+        } catch (err) {
+          try {
+            const r = tab.getBoundingClientRect();
+            const sx = window.mozInnerScreenX ?? window.screenX;
+            const sy = window.mozInnerScreenY ?? window.screenY;
+            const x = sx + r.right + 6;
+            const y = sy + r.top;
+            this.panel.openPopupAtScreen(x, y, false);
+          } catch (e2) {
+            console.warn(TAG, "openPopup failed:", e2);
+          }
         }
       }
       this.holdCompactSidebar();
@@ -677,7 +793,8 @@
       }
       clearInterval(this.dotsTimer);
       this.dotsTimer = null;
-      const cache = this.currentTab && this.caches.get(this.accountForTab(this.currentTab));
+      const key = this.currentTab ? this.cacheKeyForTab(this.currentTab) : "0@0";
+      const cache = this.currentTab && this.caches.get(key);
       const refreshedAt = cache?.refreshedAt || (cache?.data && cache.t);
       const stamp = refreshedAt ? `Refreshed ${new Date(refreshedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "";
       if (on) {
@@ -701,17 +818,32 @@
       this.box.replaceChildren(el("div", "gp-status", "Loading inbox…"));
     }
 
-    render(cache, acct) {
+    render(cache, acct, tab) {
       const box = this.box;
       box.replaceChildren();
       this.setRefreshing(this.refreshing);
       const max = iPref("mod.gmailpeek.max_items", 6);
+      const containerId = tab ? this.containerForTab(tab) : 0;
+      let identityName = "";
+      if (containerId > 0) {
+        try {
+          const id = window.ContextualIdentityService?.getPublicIdentityFromId(containerId);
+          if (id?.name) identityName = id.name;
+        } catch {}
+      }
+
       const multi = new Set(
-        [...this.gmailTabs].map(t => this.accountForTab(t))
+        [...this.gmailTabs].map(t => this.cacheKeyForTab(t))
       ).size > 1;
 
       const header = el("div", "gp-header");
-      header.appendChild(el("span", null, multi ? `Inbox · u/${acct}` : "Inbox"));
+      let headerTitle = "Inbox";
+      if (identityName) {
+        headerTitle = `Inbox · ${identityName}`;
+      } else if (multi) {
+        headerTitle = `Inbox · u/${acct}`;
+      }
+      header.appendChild(el("span", null, headerTitle));
       const right = el("div", "gp-header-right");
       if (cache.data) {
         right.appendChild(
@@ -788,12 +920,13 @@
       if (!tab) return;
       const sequence = ++this.refreshSequence;
       const acct = this.accountForTab(tab);
+      const containerId = this.containerForTab(tab);
       this.setRefreshing(true);
       try {
-        const cache = await this.getFeed(acct, true, tab);
+        const cache = await this.getFeed(acct, containerId, true);
         if (sequence !== this.refreshSequence || this.currentTab !== tab || this.panel.state === "closed") return;
         if (cache.data) this.paintBadge(tab, cache.data.count);
-        this.render(cache, acct);
+        this.render(cache, acct, tab);
       } finally {
         if (sequence === this.refreshSequence && this.currentTab === tab && this.panel.state !== "closed") {
           this.setRefreshing(false);
@@ -834,7 +967,8 @@
     navigate(tab, url) {
       try {
         gBrowser.selectedTab = tab;
-        tab.linkedBrowser.loadURI(url, {
+        const uri = typeof Services.io?.newURI === "function" ? Services.io.newURI(url) : url;
+        tab.linkedBrowser.loadURI(uri, {
           triggeringPrincipal:
             Services.scriptSecurityManager.getSystemPrincipal(),
         });
@@ -852,15 +986,17 @@
       this.scanTabs();
       const tabs = this.findGmailTabs();
       if (!tabs.length || !bPref("mod.gmailpeek.show_badge", true)) return;
-      // Group tabs by account — one fetch per unique /u/N/.
-      const byAccount = new Map();
+      // Group tabs by account + container — one fetch per unique pair.
+      const byKey = new Map();
       for (const tab of tabs) {
         const acct = this.accountForTab(tab);
-        if (!byAccount.has(acct)) byAccount.set(acct, []);
-        byAccount.get(acct).push(tab);
+        const containerId = this.containerForTab(tab);
+        const key = this.cacheKeyForTab(tab);
+        if (!byKey.has(key)) byKey.set(key, { acct, containerId, tabs: [] });
+        byKey.get(key).tabs.push(tab);
       }
-      for (const [acct, acctTabs] of byAccount) {
-        const cache = await this.getFeed(acct, false, acctTabs[0]);
+      for (const { acct, containerId, tabs: acctTabs } of byKey.values()) {
+        const cache = await this.getFeed(acct, containerId);
         if (cache.error || !cache.data) continue;
         for (const tab of acctTabs) {
           this.paintBadge(tab, cache.data.count);
