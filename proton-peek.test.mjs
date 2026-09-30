@@ -259,7 +259,7 @@ test("release builds have no routine or debug console logging", () => {
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.5.1");
+  assert.equal(theme.version, "1.5.2");
   assert.ok(theme.scripts["gmail-peek.uc.js"]);
   assert.ok(theme.scripts["proton-peek.uc.js"]);
   assert.equal(preferences.some(pref => pref.property.endsWith(".debug")), false);

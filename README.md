@@ -19,6 +19,8 @@ through the session you're already signed in with.
   so you always know how stale the list isn't.
 - **Multi-account aware.** It reads `/u/N/` off each tab's own URL, so your
   work inbox and your other work inbox each get their own preview.
+- **Compact-mode friendly.** In Zen's compact mode the sidebar politely
+  holds still while the popup is open instead of folding away mid-peek.
 
 ## Install
 

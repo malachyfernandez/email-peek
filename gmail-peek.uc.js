@@ -273,6 +273,8 @@
       this.refreshing = false;
       this.dotsTimer = null;
       this.refreshDots = 0;
+      this._compactHold = null;
+      this._weSetUserShow = false;
 
       this.onHoverIn = this.onHoverIn.bind(this);
       this.onHoverOut = this.onHoverOut.bind(this);
@@ -329,6 +331,7 @@
       document.removeEventListener("mouseout", this.onHoverOut, true);
       document.removeEventListener("pointerout", this.onHoverOut, true);
       document.removeEventListener("popupshowing", this.onPopupShowing, true);
+      this.releaseCompactSidebar();
       this.panel?.remove();
       for (const tab of this.gmailTabs) {
         (tab.shadowRoot || tab).querySelector(".gmailpeek-badge")?.remove();
@@ -584,8 +587,54 @@
           this.panel.openPopup(tab, "after_start", 4, 0, false, false);
         }
       }
+      this.holdCompactSidebar();
 
       await this.refresh(tab);
+    }
+
+    // ---------- compact-mode sidebar hold ----------
+    // Compact mode auto-hides the sidebar the moment the pointer leaves it —
+    // which would vanish this popup too. zen-user-show is the attribute Zen
+    // toggles for "user pinned this open": it is honoured only while compact
+    // mode is active and no hover timer clears it.
+    compactSidebar() {
+      try {
+        if (
+          document.documentElement.getAttribute("zen-compact-mode") !== "true"
+        )
+          return null;
+      } catch {
+        return null;
+      }
+      return (
+        window.gZenCompactModeManager?.sidebar ||
+        document.getElementById("navigator-toolbox") ||
+        null
+      );
+    }
+
+    holdCompactSidebar() {
+      const sb = this.compactSidebar();
+      if (!sb || this._compactHold === sb) return;
+      this._compactHold = sb;
+      this._weSetUserShow = !sb.hasAttribute("zen-user-show");
+      if (this._weSetUserShow) sb.setAttribute("zen-user-show", "true");
+    }
+
+    releaseCompactSidebar() {
+      const sb = this._compactHold;
+      if (!sb) return;
+      this._compactHold = null;
+      if (!this._weSetUserShow) return;
+      this._weSetUserShow = false;
+      // Pointer still on the strip? Hand back to Zen's own hover tracking so
+      // it collapses naturally on mouse-leave instead of snapping shut.
+      if (sb.matches(":hover")) {
+        try {
+          window.gZenCompactModeManager?._setElementExpandAttribute(sb, true);
+        } catch {}
+      }
+      sb.removeAttribute("zen-user-show");
     }
 
     // Keep refresh progress and the last successful refresh time visible
@@ -843,6 +892,7 @@
       this.refreshing = false;
       clearInterval(this.dotsTimer);
       this.dotsTimer = null;
+      this.releaseCompactSidebar();
       if (this.hoverTab) this.restoreTooltip(this.hoverTab);
       this.hoverTab = null;
       this.currentTab = null;
