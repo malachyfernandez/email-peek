@@ -44,9 +44,10 @@ Requires Gmail signed in **in the default (non-container) context**.
 Same trick for Proton Mail tabs, purple badge included. Proton encrypts
 everything and offers no handy feed, so Email Peek keeps a tiny hidden
 browser pointed at your mailbox and reads the rendered list — decrypted
-subjects go straight from the page to the popup and nowhere else. Pin Proton
-on any mailbox view (`/u/1/inbox`, `/u/1/almost-all-mail`, ...); the popup
-always shows the unread pile.
+subjects go straight from the page to the popup and nowhere else. The peek
+follows the tab's **pinned home view** — so if you wander the pinned tab off
+to Sent or a settings page, the popup still shows your unread pile (and if
+the home can't be found, it falls back to all-mail unread for that account).
 
 ## Settings
 

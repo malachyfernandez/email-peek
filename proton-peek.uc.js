@@ -742,12 +742,40 @@ export class ProtonPeekChild extends _PPBase {
       return defaultAccount();
     }
 
-    // Pretty view name from the URL slug: /u/1/almost-all-mail ->
-    // "Almost all mail". Used for the popup header.
+    // Resolved peek target: Zen stores a pinned tab's true home in
+    // _zenPinnedInitialState (set at pin time, user-editable, restored
+    // across sessions). Pinned tabs wander — Sent, a conversation, a
+    // settings page — so we peek at the home view, not wherever the tab is
+    // sitting. Without pinned state we trust only the account number and
+    // fall back to the canonical all-mail unread view.
+    peekParts(tab) {
+      const home = tab?._zenPinnedInitialState?.entry?.url;
+      const spec = home || this.tabUrl(tab);
+      try {
+        const u = new URL(spec);
+        const m = u.pathname.match(/^\/u\/\d+\/([a-z0-9-]+)/i);
+        // The label is only trusted from the pinned home view; a wandering
+        // tab (Sent, settings, ...) gets the canonical unread view instead.
+        const label = home ? (m ? m[1] : "inbox") : "almost-all-mail";
+        const params = new URLSearchParams(
+          home ? u.hash.replace(/^#/, "") : ""
+        );
+        params.set("filter", "unread");
+        return {
+          origin: u.origin,
+          acct: this.accountForTab(tab),
+          label,
+          hash: params.toString(),
+        };
+      } catch {}
+      return null;
+    }
+
+    // Pretty view name for the popup header — matches the view the peek is
+    // actually listing (e.g. /u/1/almost-all-mail -> "Almost all mail").
     labelForTab(tab) {
-      const m = this.tabUrl(tab).match(/\/u\/\d+\/([a-z0-9-]+)/i);
-      if (!m) return "Proton Mail";
-      const slug = decodeURIComponent(m[1]);
+      const slug = this.peekParts(tab)?.label;
+      if (!slug) return "Proton Mail";
       return slug
         .split("-")
         .map(w => (w ? w[0].toUpperCase() + w.slice(1) : w))
@@ -871,19 +899,11 @@ export class ProtonPeekChild extends _PPBase {
 
     // Normalized list URL: <origin>/u/N/<label>#hash — conversation/message
     // id segments and query params are stripped so the phantom always lands
-    // on a list view. The hash's other params (#category=...) are kept, but
-    // filter=unread is always forced in: the peek shows unread mail only.
+    // on a list view, filter=unread is always in the hash, and the target is
+    // the pinned tab's home view (see peekParts).
     peekUrl(tab) {
-      const spec = this.tabUrl(tab);
-      try {
-        const u = new URL(spec);
-        const m = u.pathname.match(/^\/u\/(\d+)\/([a-z0-9-]+)/i);
-        const acct = m ? m[1] : this.accountForTab(tab);
-        const label = m ? m[2] : "inbox";
-        const params = new URLSearchParams(u.hash.replace(/^#/, ""));
-        params.set("filter", "unread");
-        return `${u.origin}/u/${acct}/${label}#${params}`;
-      } catch {}
+      const p = this.peekParts(tab);
+      if (p) return `${p.origin}/u/${p.acct}/${p.label}#${p.hash}`;
       return `${this.inboxUrl(tab)}#filter=unread`;
     }
 

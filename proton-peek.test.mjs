@@ -193,22 +193,38 @@ test("collect extracts sender, full subject, displayed date and unread state", (
   });
 });
 
-test("list URL normalization forces unread filter and keeps other params", () => {
+test("peek URL uses the pinned home view, not wherever the tab wandered", () => {
   context.URL = URL;
   context.URLSearchParams = URLSearchParams;
   const peek = new ProtonPeek();
-  const stub = spec => ({ linkedBrowser: { currentURI: { spec } } });
+  const stub = (spec, home) => ({
+    linkedBrowser: { currentURI: { spec } },
+    _zenPinnedInitialState: home ? { entry: { url: home } } : undefined,
+  });
+  // The pinned home view wins even while the tab sits on another page.
   assert.equal(
-    peek.peekUrl(stub("https://mail.proton.me/u/1/almost-all-mail/message-id#filter=unread")),
+    peek.peekUrl(stub(
+      "https://mail.proton.me/u/1/sent",
+      "https://mail.proton.me/u/1/almost-all-mail/message-id#filter=unread"
+    )),
     "https://mail.proton.me/u/1/almost-all-mail#filter=unread"
   );
   assert.equal(
-    peek.peekUrl(stub("https://mail.proton.me/u/1/inbox#category=primary")),
+    peek.peekUrl(stub(
+      "https://mail.proton.me/u/1/sent/some-id",
+      "https://mail.proton.me/u/1/inbox#category=primary"
+    )),
     "https://mail.proton.me/u/1/inbox#category=primary&filter=unread"
   );
+  // No pinned state: only the account number is trusted, label falls back
+  // to the canonical unread view.
   assert.equal(
-    peek.peekUrl(stub("https://mail.proton.me/u/0/inbox")),
-    "https://mail.proton.me/u/0/inbox#filter=unread"
+    peek.peekUrl(stub("https://mail.proton.me/u/0/sent")),
+    "https://mail.proton.me/u/0/almost-all-mail#filter=unread"
+  );
+  assert.equal(
+    peek.peekUrl(stub("https://mail.proton.me/u/2/inbox")),
+    "https://mail.proton.me/u/2/almost-all-mail#filter=unread"
   );
 });
 
@@ -243,7 +259,7 @@ test("release builds have no routine or debug console logging", () => {
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.5.0");
+  assert.equal(theme.version, "1.5.1");
   assert.ok(theme.scripts["gmail-peek.uc.js"]);
   assert.ok(theme.scripts["proton-peek.uc.js"]);
   assert.equal(preferences.some(pref => pref.property.endsWith(".debug")), false);
