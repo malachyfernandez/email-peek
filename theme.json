@@ -1,9 +1,9 @@
 {
   "id": "gmail-peek",
   "name": "Email Peek",
-  "description": "Arc-style inbox previews for pinned or essential Gmail, Proton Mail, and Outlook tabs. Refreshes on hover using your existing signed-in session — no API key needed.",
+  "description": "Arc-style inbox previews for pinned or essential Gmail, Proton Mail, Outlook, and iCloud tabs. Refreshes on hover using your existing signed-in session — no API key needed.",
   "author": "malachyfernandez + Devin",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "homepage": "https://github.com/malachyfernandez/email-peek",
   "readme": "https://raw.githubusercontent.com/malachyfernandez/email-peek/main/README.md",
   "ai": "partial",
@@ -22,6 +22,11 @@
       "include": [
         "chrome://browser/content/browser.xhtml"
       ]
+    },
+    "icloud-peek.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ]
     }
   },
   "preferences": "preferences.json",
@@ -33,7 +38,8 @@
     "arc",
     "gmail",
     "proton",
-    "outlook"
+    "outlook",
+    "icloud"
   ],
   "createdAt": "2026-09-27",
   "updatedAt": "2026-10-01"

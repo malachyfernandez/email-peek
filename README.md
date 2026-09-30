@@ -4,8 +4,9 @@
 
 Peek at your inbox without leaving whatever you were actually doing.
 
-Hover a pinned Gmail, Proton Mail, or Outlook tab in Zen and a small popup
-slides in with your unread mail — sender, subject, and when it landed. Click an email
+Hover a pinned Gmail, Proton Mail, Outlook, or iCloud Mail tab in Zen and a
+small popup slides in with your unread mail — sender, subject, and when it
+landed. Click an email
 to open it in the tab, or hit `+` to fire off a new one. That's the whole
 trick: no API keys, no OAuth ceremony, no third-party service. It reads mail
 through the session you're already signed in with.
@@ -64,6 +65,15 @@ should degrade gracefully instead of vanishing. Works with outlook.live.com,
 outlook.com, and the Office 365 flavors. Also follows the pinned home view,
 unread-only, badge included.
 
+## + iCloud Peek
+
+Completing the set: hover your pinned `icloud.com/mail` tab and the same
+popup shows your unread pile. iCloud keeps its mail app in a hidden iframe,
+so this one politely descends a frame deeper before reading the list —
+still your own session, still never leaving the browser. The unread badge
+reads the `(N)` right out of the tab title, which is delightfully honest of
+Apple.
+
 ## Settings
 
 In Sine → Mod Settings (or `about:config`):
@@ -76,8 +86,9 @@ In Sine → Mod Settings (or `about:config`):
 | `mod.gmailpeek.hide_delay` | `150` | ms before the preview closes on mouse-out |
 | `mod.gmailpeek.show_badge` | `true` | Unread badge on the tab icon |
 
-The Proton and Outlook halves take the same set under `mod.protonpeek.*` and
-`mod.outlookpeek.*`, each with an `enabled` pref to toggle it independently.
+The Proton, Outlook, and iCloud halves take the same set under
+`mod.protonpeek.*`, `mod.outlookpeek.*`, and `mod.icloudpeek.*`, each with
+an `enabled` pref to toggle it independently.
 
 ## Under the hood
 
@@ -108,6 +119,13 @@ For the curious; nothing below is required reading.
   the timestamp hides in a `title` attribute. Clicking a row opens the
   canonical `/mail/N/<folder>/id/<convid>` route; `+` hunts the
   `New mail` button and falls back to `/mail/deeplink/compose`.
+- **iCloud** runs the same phantom + actor pair, but the mail app renders
+  inside a same-origin CloudOS iframe (`iframe[data-name="mail2"]`), so the
+  collector descends into that frame first. Its DOM has few test hooks, so
+  extraction leans on roles, `[class*="sender"|"subject"]` hints, `<time>`
+  elements, and `unread` markers in classes and aria-labels. iCloud has no
+  public message deep-links, so clicking a row asks the real tab's actor to
+  click it for you; the badge comes from `Inbox (N) | iCloud Mail`.
 - Requires Sine (or fx-autoconfig) with the `chrome://userscripts/` mapping.
   Actor modules are written to `<profile>/chrome/JS/proton-peek/` on first
   run; if no chrome URI resolves, it falls back to `data:` module URIs.

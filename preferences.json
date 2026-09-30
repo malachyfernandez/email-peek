@@ -100,5 +100,35 @@
     "label": "Outlook Peek — show an unread-count badge on the tab icon",
     "type": "checkbox",
     "defaultValue": true
+  },
+  {
+    "property": "mod.icloudpeek.enabled",
+    "label": "iCloud Peek — enable hover previews for pinned iCloud Mail tabs",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.icloudpeek.max_items",
+    "label": "iCloud Peek — max emails shown in the preview",
+    "type": "string",
+    "defaultValue": "6"
+  },
+  {
+    "property": "mod.icloudpeek.hover_delay",
+    "label": "iCloud Peek — hover delay before the preview opens (ms)",
+    "type": "string",
+    "defaultValue": "400"
+  },
+  {
+    "property": "mod.icloudpeek.hide_delay",
+    "label": "iCloud Peek — delay before the preview closes after the mouse leaves (ms)",
+    "type": "string",
+    "defaultValue": "150"
+  },
+  {
+    "property": "mod.icloudpeek.show_badge",
+    "label": "iCloud Peek — show an unread-count badge on the tab icon",
+    "type": "checkbox",
+    "defaultValue": true
   }
 ]

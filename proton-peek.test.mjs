@@ -34,6 +34,14 @@ vm.runInNewContext(outlookSource.replace(
 ), outlookContext);
 const { CHILD_SOURCE: O_CHILD_SOURCE, PARENT_SOURCE: O_PARENT_SOURCE, OutlookPeek } = outlookContext.subject;
 outlookContext.document = { createElementNS: () => uiNode() };
+const icloudSource = readFileSync(new URL("./icloud-peek.uc.js", import.meta.url), "utf8");
+const icloudContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
+vm.runInNewContext(icloudSource.replace(
+  "  const boot = () => {",
+  "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, ICloudPeek, ensureActor }; return;\n  const boot = () => {"
+), icloudContext);
+const { CHILD_SOURCE: I_CHILD_SOURCE, PARENT_SOURCE: I_PARENT_SOURCE, ICloudPeek } = icloudContext.subject;
+icloudContext.document = { createElementNS: () => uiNode() };
 
 function uiNode() {
   return {
@@ -63,6 +71,7 @@ for (const [name, Peek, prefix, get, load] of [
   ["Gmail", GmailPeek, "gp", "getFeed", "fetchFeed"],
   ["Proton", ProtonPeek, "pp", "getPeek", "scrapeTab"],
   ["Outlook", OutlookPeek, "op", "getPeek", "scrapeTab"],
+  ["iCloud", ICloudPeek, "ip", "getPeek", "scrapeTab"],
 ]) {
   function fixture() {
     const peek = new Peek();
@@ -263,19 +272,25 @@ test("ping verifies document access without emitting trace messages", () => {
 
 test("release builds have no routine or debug console logging", () => {
   const gmailSource = readFileSync(new URL("./gmail-peek.uc.js", import.meta.url), "utf8");
-  for (const code of [source, gmailSource, outlookSource, CHILD_SOURCE, PARENT_SOURCE, O_CHILD_SOURCE, O_PARENT_SOURCE]) {
+  for (const code of [source, gmailSource, outlookSource, icloudSource, CHILD_SOURCE, PARENT_SOURCE, O_CHILD_SOURCE, O_PARENT_SOURCE, I_CHILD_SOURCE, I_PARENT_SOURCE]) {
     assert.doesNotMatch(code, /console\.log|\bdebug\(|Peek:Trace/);
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.6.0");
-  assert.ok(theme.scripts["gmail-peek.uc.js"]);
-  assert.ok(theme.scripts["proton-peek.uc.js"]);
-  assert.ok(theme.scripts["outlook-peek.uc.js"]);
+  assert.equal(theme.version, "1.7.0");
+  for (const script of ["gmail-peek.uc.js", "proton-peek.uc.js", "outlook-peek.uc.js", "icloud-peek.uc.js"]) {
+    assert.ok(theme.scripts[script], `theme.scripts missing ${script}`);
+  }
   for (const pref of ["enabled", "account", "max_items", "hover_delay", "hide_delay", "show_badge"]) {
     assert.ok(
       preferences.some(p => p.property === `mod.outlookpeek.${pref}`),
       `missing mod.outlookpeek.${pref}`
+    );
+  }
+  for (const pref of ["enabled", "max_items", "hover_delay", "hide_delay", "show_badge"]) {
+    assert.ok(
+      preferences.some(p => p.property === `mod.icloudpeek.${pref}`),
+      `missing mod.icloudpeek.${pref}`
     );
   }
   assert.equal(preferences.some(pref => pref.property.endsWith(".debug")), false);
@@ -545,4 +560,158 @@ test("Outlook empty SPA shell is not accepted as a successfully empty mailbox", 
   } finally {
     outlookContext.Services.prefs = previous;
   }
+});
+
+// ---------- iCloud Peek ----------
+
+function icloudScraper(document) {
+  const scope = { JSWindowActorChild: class {}, console };
+  vm.runInNewContext(I_CHILD_SOURCE.replace("export class ICloudPeekChild", "globalThis.ICloudPeekChild = class ICloudPeekChild"), scope);
+  const child = new scope.ICloudPeekChild();
+  child.document = document;
+  return child;
+}
+
+// A generic iCloud-ish row: semantic-class Ember markup, no OWA hooks.
+function icloudRow({ unread = true } = {}) {
+  const sender = { textContent: "Apple", getAttribute: () => null, contains: () => false };
+  const subject = { textContent: "Your receipt", getAttribute: () => null, contains: () => false };
+  const time = {
+    textContent: "9:15 AM",
+    getAttribute: n => (n === "datetime" ? "2026-10-01T09:15:00Z" : null),
+    contains: () => false,
+  };
+  return {
+    localName: "li",
+    id: "msg-42",
+    textContent: "Apple Your receipt 9:15 AM",
+    className: unread ? "list-item unread" : "list-item read",
+    classList: { contains: c => (unread ? c === "unread" || c === "list-item" : c === "read" || c === "list-item") },
+    getAttribute: name => {
+      if (name === "data-guid") return "guid-42";
+      if (name === "aria-label") return unread ? "Unread, Apple, Your receipt, 9:15 AM" : "Apple, Your receipt, 9:15 AM";
+      return null;
+    },
+    querySelector(sel) {
+      if (sel === "time[datetime], time, [datetime]") return time;
+      if (/subject/i.test(sel)) return subject;
+      if (/sender|from|author/i.test(sel)) return sender;
+      if (/date|time/i.test(sel)) return time;
+      return null;
+    },
+    querySelectorAll(sel) {
+      if (sel === "[title]") return [];
+      if (/unread/i.test(sel)) return unread ? [{}] : [];
+      return [];
+    },
+  };
+}
+
+// iCloud renders mail inside iframe.child-application[data-name="mail2"];
+// the outer doc only knows the iframe. Extraction must descend into it.
+function icloudDoc(rows) {
+  const inner = {
+    body: {},
+    title: "iCloud Mail",
+    location: { href: "https://www.icloud.com/applications/mail2/current/en-us/index.html" },
+    querySelector: sel => (/compose/i.test(sel) ? {} : null),
+    querySelectorAll: sel => {
+      if (sel.includes("data-message-id") || sel.includes("data-guid")) return rows;
+      if (sel === "[title]") return [];
+      return [];
+    },
+  };
+  const frame = { contentDocument: inner };
+  return {
+    body: {},
+    title: "Inbox (2) | iCloud Mail",
+    readyState: "complete",
+    visibilityState: "visible",
+    location: { href: "https://www.icloud.com/mail/" },
+    querySelector: sel => {
+      if (sel === "#root, .root-component") return { childElementCount: 3 };
+      if (/iframe/.test(sel)) return frame;
+      return null;
+    },
+    querySelectorAll: () => [],
+  };
+}
+
+test("iCloud runtime-generated actor modules parse", () => {
+  for (const module of [I_PARENT_SOURCE, I_CHILD_SOURCE]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--check"], { input: module, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  assert.equal(I_CHILD_SOURCE.includes("\b"), false, "no backspace characters in embedded regexes");
+});
+
+test("iCloud collect descends into the mail iframe and extracts rows", () => {
+  const result = icloudScraper(icloudDoc([icloudRow()])).collect(6);
+  assert.equal(result.diagnostics.inFrame, true);
+  assert.equal(result.title, "Inbox (2) | iCloud Mail");
+  assert.equal(result.rowCount, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.entries[0])), {
+    id: "guid-42",
+    subject: "Your receipt",
+    sender: "Apple",
+    time: "9:15 AM",
+    fullDate: "2026-10-01T09:15:00Z",
+    unread: true,
+    index: 0,
+  });
+});
+
+test("iCloud unread state from classes, markers and aria labels", () => {
+  const child = icloudScraper(null);
+  assert.equal(child.isUnread(icloudRow({ unread: true })), true);
+  assert.equal(child.isUnread(icloudRow({ unread: false })), false);
+  const bare = icloudRow({ unread: false });
+  bare.className = "list-item";
+  bare.classList = { contains: () => false };
+  bare.getAttribute = () => null;
+  bare.querySelector = () => null;
+  assert.equal(child.isUnread(bare), null);
+});
+
+test("iCloud reads the unread count from the mid-title (N)", () => {
+  const peek = new ICloudPeek();
+  assert.equal(
+    peek.countFromTitle({ linkedBrowser: { contentTitle: "Inbox (3) | iCloud Mail" } }),
+    3
+  );
+  assert.equal(
+    peek.countFromTitle({ linkedBrowser: { contentTitle: "(7) Inbox | iCloud Mail" } }),
+    7
+  );
+  assert.equal(
+    peek.countFromTitle({ linkedBrowser: { contentTitle: "Inbox | iCloud Mail" } }),
+    null
+  );
+});
+
+test("iCloud tabs are only claimed when the URL is the mail app", () => {
+  const peek = new ICloudPeek();
+  const tab = url => ({
+    pinned: true,
+    hasAttribute: a => a === "pinned",
+    linkedBrowser: { currentURI: { spec: url } },
+  });
+  assert.equal(peek.isICloudTab(tab("https://www.icloud.com/mail/")), true);
+  assert.equal(peek.isICloudTab(tab("https://www.icloud.com/mail")), true);
+  assert.equal(peek.isICloudTab(tab("https://www.icloud.com/")), false);
+  assert.equal(peek.isICloudTab(tab("https://www.icloud.com/photos/")), false);
+  assert.equal(peek.isICloudTab(tab("https://example.com/mail/")), false);
+});
+
+test("iCloud peek URL is always the mail root", () => {
+  const peek = new ICloudPeek();
+  const tab = spec => ({
+    linkedBrowser: { currentURI: { spec } },
+    _zenPinnedInitialState: { entry: { url: "https://www.icloud.com/mail/" } },
+  });
+  assert.equal(
+    peek.peekUrl(tab("https://www.icloud.com/mail/anything/at/all")),
+    "https://www.icloud.com/mail/"
+  );
+  assert.equal(peek.inboxUrl(tab("https://www.icloud.com/mail/")), "https://www.icloud.com/mail/");
 });
