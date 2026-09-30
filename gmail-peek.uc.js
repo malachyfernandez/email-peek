@@ -2,7 +2,7 @@
 // @name           Gmail Peek
 // @namespace      gmail-peek
 // @description    Arc-style inbox preview when hovering a pinned/essential Gmail tab
-// @version        1.1.0
+// @version        1.4.0
 // @author         malachyfernandez + Devin
 // @include        main
 // @ignorecache
@@ -43,12 +43,6 @@
   const bPref = (n, f) => {
     const v = pref(n, f);
     return typeof v === "boolean" ? v : String(v) === "true";
-  };
-
-  const debug = (...args) => {
-    if (bPref("mod.gmailpeek.debug", true)) {
-      console.log(TAG, ...args);
-    }
   };
 
   // Default account index when a tab's URL doesn't carry /u/N/.
@@ -247,12 +241,12 @@
     #gmailpeek-panel .gp-refreshing {
       position: absolute;
       left: 14px;
-      bottom: 9px;
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 2px;
+      right: 48px;
+      bottom: 15px;
+      font-size: 11px;
+      font-weight: 400;
       color: var(--gp-dim);
-      min-width: 30px;
+      text-align: right;
     }
   `;
 
@@ -277,6 +271,8 @@
       this.inflights = new Map(); // account -> Promise
       this.gmailTabs = new Set();
       this.boundTabs = new WeakSet();
+      this.refreshSequence = 0;
+      this.refreshing = false;
 
       this.onHoverIn = this.onHoverIn.bind(this);
       this.onHoverOut = this.onHoverOut.bind(this);
@@ -320,16 +316,10 @@
 
       this.scanTabs();
       this.refreshBadge();
-      console.log(
-        TAG,
-        `loaded; gmail tabs found: ${this.gmailTabs.size}`,
-        [...this.gmailTabs].map(t => this.tabUrl(t))
-      );
     }
 
     destroy() {
       clearInterval(this.badgeInterval);
-      clearInterval(this.dotsTimer);
       clearTimeout(this.hoverTimer);
       clearTimeout(this.hideTimer);
       this.observer?.disconnect();
@@ -399,7 +389,6 @@
           tab.addEventListener("mouseleave", this.onHoverOut, false);
         }
       }
-      debug("scanTabs ->", this.gmailTabs.size, "gmail tab(s)");
     }
 
     findGmailTabs() {
@@ -411,13 +400,6 @@
     onHoverIn(e) {
       const tab = asTab(e.target) || asTab(e.currentTarget);
       if (!tab) return;
-      debug("hover in tab:", {
-        pinned: tab.pinned,
-        essential: tab.hasAttribute("zen-essential"),
-        url: this.tabUrl(tab),
-        account: this.accountForTab(tab),
-        isGmail: this.isGmailTab(tab),
-      });
       if (!this.isGmailTab(tab)) return;
       if (this.hoverTab === tab) return;
       this.enterTab(tab);
@@ -479,7 +461,6 @@
       const isOurs = trigger && (trigger === this.hoverTab ||
         this.hoverTab?.contains(trigger));
       if (/tooltip/i.test(id) || isOurs) {
-        debug("suppressed tooltip:", id || t.localName);
         e.preventDefault();
         e.stopPropagation();
       }
@@ -534,14 +515,13 @@
           acct,
           this.fetchFeed(acct)
             .then(data => {
-              this.caches.set(acct, { t: Date.now(), data, error: null });
-              debug(`feed ok (u/${acct}):`, data.count, "unread,",
-                data.entries.length, "entries");
+              const t = Date.now();
+              this.caches.set(acct, { t, refreshedAt: t, data, error: null });
             })
             .catch(err => {
-              console.warn(TAG, `feed error (u/${acct}):`, err);
               this.caches.set(acct, {
                 t: Date.now(),
+                refreshedAt: cache.refreshedAt || (cache.data ? cache.t : 0),
                 data: null,
                 error: String(err?.message || err),
               });
@@ -604,33 +584,25 @@
         }
       }
 
-      this.setRefreshing(true);
-      try {
-        const cache = await this.getFeed(acct);
-        if (this.hoverTab !== tab || this.panel.state === "closed") return;
-        if (cache.data) this.paintBadge(tab, cache.data.count);
-        this.render(cache, acct);
-      } finally {
-        this.setRefreshing(false);
-      }
+      await this.refresh(tab);
     }
 
-    // Animated "." -> ".." -> "..." indicator bottom-left while a fetch is
-    // in flight over already-rendered content.
+    // Keep refresh progress and the last successful refresh time visible
+    // alongside already-rendered content.
     setRefreshing(on) {
-      let dot = this.box.querySelector(".gp-refreshing");
-      if (on) {
-        if (dot) return;
-        dot = el("div", "gp-refreshing", ".");
-        this.box.appendChild(dot);
-        this.dotsTimer = setInterval(() => {
-          dot.textContent = dot.textContent.length >= 3 ? "." : dot.textContent + ".";
-        }, 300);
-      } else {
-        clearInterval(this.dotsTimer);
-        this.dotsTimer = null;
-        dot?.remove();
+      this.refreshing = on;
+      let status = this.box.querySelector(".gp-refreshing");
+      if (!status) {
+        status = el("div", "gp-refreshing");
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        this.box.appendChild(status);
       }
+      const cache = this.currentTab && this.caches.get(this.accountForTab(this.currentTab));
+      const refreshedAt = cache?.refreshedAt || (cache?.data && cache.t);
+      const stamp = refreshedAt ? `Refreshed ${new Date(refreshedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "";
+      status.textContent = on ? "Refreshing…" : cache?.error ? `Refresh failed${stamp ? " · " + stamp : ""}` : stamp;
+      this.box.querySelector(".gp-refresh")?.classList.toggle("gp-spin", on);
     }
 
     renderLoading() {
@@ -640,6 +612,7 @@
     render(cache, acct) {
       const box = this.box;
       box.replaceChildren();
+      this.setRefreshing(this.refreshing);
       const max = iPref("mod.gmailpeek.max_items", 6);
       const multi = new Set(
         [...this.gmailTabs].map(t => this.accountForTab(t))
@@ -719,16 +692,25 @@
       return btn;
     }
 
-    async doRefresh() {
-      const tab = this.currentTab;
+    async refresh(tab) {
       if (!tab) return;
+      const sequence = ++this.refreshSequence;
       const acct = this.accountForTab(tab);
-      this.box.querySelector(".gp-refresh")?.classList.add("gp-spin");
-      const cache = await this.getFeed(acct, true);
-      if (cache.data) this.paintBadge(tab, cache.data.count);
-      if (this.panel && this.panel.state !== "closed") {
+      this.setRefreshing(true);
+      try {
+        const cache = await this.getFeed(acct, true);
+        if (sequence !== this.refreshSequence || this.currentTab !== tab || this.panel.state === "closed") return;
+        if (cache.data) this.paintBadge(tab, cache.data.count);
         this.render(cache, acct);
+      } finally {
+        if (sequence === this.refreshSequence && this.currentTab === tab && this.panel.state !== "closed") {
+          this.setRefreshing(false);
+        }
       }
+    }
+
+    doRefresh() {
+      return this.refresh(this.currentTab);
     }
 
     // ---------- interactions ----------
@@ -841,6 +823,8 @@
     }
 
     onPanelHidden() {
+      this.refreshSequence++;
+      this.refreshing = false;
       if (this.hoverTab) this.restoreTooltip(this.hoverTab);
       this.hoverTab = null;
       this.currentTab = null;
@@ -851,7 +835,6 @@
   const boot = () => {
     try {
       if (!window.gBrowser) {
-        console.warn(TAG, "no gBrowser yet, retrying in 500ms");
         setTimeout(boot, 500);
         return;
       }

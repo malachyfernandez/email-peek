@@ -18,6 +18,9 @@ or hit `+` to start a compose.
   whose URL carries no `/u/N/`.
 - The feed only contains **unread** mail, so the preview mirrors what Arc
   shows.
+- Every popup opening refreshes the preview, displaying cached mail while
+  the new request runs. The footer shows “Refreshing…” followed by the
+  local time of the last successful refresh; failed attempts are labeled.
 - Bonus: an unread-count badge on the tab icon (toggleable), refreshed on
   every hover and every 2.5 minutes.
 
@@ -48,7 +51,35 @@ Configurable in Sine → Mod Settings (or `about:config`):
 | `mod.gmailpeek.hover_delay` | `400` | ms before the preview opens |
 | `mod.gmailpeek.hide_delay` | `150` | ms before the preview closes on mouse-out |
 | `mod.gmailpeek.show_badge` | `true` | Unread badge on the tab icon |
-| `mod.gmailpeek.debug` | `true` | Log to Browser Console (Cmd+Shift+J) |
+
+## Proton Peek
+
+The same mod also ships `proton-peek.uc.js`, an Arc-style preview for pinned
+Proton Mail tabs. Proton has no Atom feed and its API is end-to-end encrypted,
+so instead of a network request the mod keeps a hidden 1×1 `<browser>` per
+account — always loaded, never asleep — showing the same mailbox view as your
+pinned tab, and reads the rendered DOM out of it via a `JSWindowActor`. Your
+decrypted subjects are passed locally to the browser popup, not sent to an
+external service. The pinned tab can sleep while the hidden browser stays
+loaded.
+
+- Pin Proton Mail on any mailbox view you like (e.g.
+  `https://mail.proton.me/u/1/almost-all-mail#filter=unread`) — the popup
+  mirrors that view. `/u/N/` multi-account works.
+- Extraction anchors on Proton's semantic/test attributes
+  (`data-element-id`, `data-testid`, `aria-labelledby`, `<time datetime>`),
+  not styling classes, with layered fallbacks at every step.
+- Clicking a row navigates the pinned tab to Proton's canonical
+  `/u/N/<label>/<elementId>` route.
+- Unread badge reads the `(N)` prefix Proton puts in the tab title (real tab
+  or phantom); falls back to counting scraped unread rows.
+- Requires Sine or fx-autoconfig's `chrome://userscripts/` mapping. The actor
+  modules are written to `<profile>/chrome/JS/proton-peek/` on first run;
+  if no chrome URI resolves, it falls back to `data:` module URIs.
+
+Toggle it independently via `mod.protonpeek.enabled`. Same
+`account`/`max_items`/`hover_delay`/`hide_delay`/`show_badge` prefs,
+under the `mod.protonpeek.*` prefix.
 
 ## Known limitations
 

@@ -30,8 +30,38 @@
     "defaultValue": true
   },
   {
-    "property": "mod.gmailpeek.debug",
-    "label": "Log debug info to the Browser Console (Cmd+Shift+J)",
+    "property": "mod.protonpeek.enabled",
+    "label": "Proton Peek — enable hover previews for pinned Proton Mail tabs",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.protonpeek.account",
+    "label": "Fallback Proton account index — used only when a tab's URL has no /u/N/ in it",
+    "type": "string",
+    "defaultValue": "0"
+  },
+  {
+    "property": "mod.protonpeek.max_items",
+    "label": "Proton Peek — max emails shown in the preview",
+    "type": "string",
+    "defaultValue": "6"
+  },
+  {
+    "property": "mod.protonpeek.hover_delay",
+    "label": "Proton Peek — hover delay before the preview opens (ms)",
+    "type": "string",
+    "defaultValue": "400"
+  },
+  {
+    "property": "mod.protonpeek.hide_delay",
+    "label": "Proton Peek — delay before the preview closes after the mouse leaves (ms)",
+    "type": "string",
+    "defaultValue": "150"
+  },
+  {
+    "property": "mod.protonpeek.show_badge",
+    "label": "Proton Peek — show an unread-count badge on the tab icon",
     "type": "checkbox",
     "defaultValue": true
   }
