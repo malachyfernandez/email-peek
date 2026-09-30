@@ -63,9 +63,11 @@ decrypted subjects are passed locally to the browser popup, not sent to an
 external service. The pinned tab can sleep while the hidden browser stays
 loaded.
 
-- Pin Proton Mail on any mailbox view you like (e.g.
-  `https://mail.proton.me/u/1/almost-all-mail#filter=unread`) — the popup
-  mirrors that view. `/u/N/` multi-account works.
+- Shows **unread mail only**. Pin Proton Mail on any mailbox view
+  (`/u/1/inbox`, `/u/1/almost-all-mail`, ...) — `filter=unread` is forced
+  into the phantom's URL hash so Proton itself filters the list, and rows
+  positively identified as read are dropped client-side too. `/u/N/`
+  multi-account works.
 - Extraction anchors on Proton's semantic/test attributes
   (`data-element-id`, `data-testid`, `aria-labelledby`, `<time datetime>`),
   not styling classes, with layered fallbacks at every step.

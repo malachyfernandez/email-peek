@@ -10,6 +10,9 @@ const context = {
   console,
   setTimeout,
   clearTimeout,
+  // unref so a leftover interval can't keep the test process alive
+  setInterval: (fn, ms) => setInterval(fn, ms).unref(),
+  clearInterval,
   Services: { prefs: { getPrefType: () => 0 } },
 };
 vm.runInNewContext(source.replace(
@@ -17,7 +20,7 @@ vm.runInNewContext(source.replace(
   "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, ProtonPeek, ensureActor }; return;\n  const boot = () => {"
 ), context);
 const { CHILD_SOURCE, PARENT_SOURCE, ProtonPeek } = context.subject;
-const gmailContext = { window: {}, console, setTimeout, clearTimeout, Services: context.Services };
+const gmailContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services };
 vm.runInNewContext(readFileSync(new URL("./gmail-peek.uc.js", import.meta.url), "utf8").replace(
   "  const boot = () => {",
   "  globalThis.GmailPeek = GmailPeek; return;\n  const boot = () => {"
@@ -80,7 +83,10 @@ for (const [name, Peek, prefix, get, load] of [
     let finish;
     peek[load] = () => new Promise(resolve => { finish = resolve; });
     const opening = peek.show(tab);
-    assert.equal(peek.box.querySelector(`.${prefix}-refreshing`).textContent, "Refreshing…");
+    assert.match(peek.box.querySelector(`.${prefix}-refreshing`).textContent, /^Refreshing\.{1,3}$/);
+    await new Promise(resolve => setTimeout(resolve, 700));
+    const dots = peek.box.querySelector(`.${prefix}-refreshing`).textContent.match(/\.+$/)[0].length;
+    assert.ok(dots >= 2 && dots <= 3, "refresh dots animate from . to .. to ...");
     peek.hoverTab = null;
     finish({ count: 0, entries: [] });
     await opening;
@@ -96,7 +102,7 @@ for (const [name, Peek, prefix, get, load] of [
     const opening = peek.show(tab);
     const manual = peek.doRefresh();
     assert.equal(requests, 1);
-    assert.equal(peek.box.querySelector(`.${prefix}-refreshing`).textContent, "Refreshing…");
+    assert.match(peek.box.querySelector(`.${prefix}-refreshing`).textContent, /^Refreshing\.{1,3}$/);
     finish({ count: 0, entries: [] });
     await Promise.all([opening, manual]);
     assert.match(peek.box.querySelector(`.${prefix}-refreshing`).textContent, /^Refreshed /);
@@ -187,11 +193,37 @@ test("collect extracts sender, full subject, displayed date and unread state", (
   });
 });
 
-test("list URL normalization preserves unread/category filters", () => {
+test("list URL normalization forces unread filter and keeps other params", () => {
   context.URL = URL;
+  context.URLSearchParams = URLSearchParams;
   const peek = new ProtonPeek();
-  const tab = { linkedBrowser: { currentURI: { spec: "https://mail.proton.me/u/1/almost-all-mail/message-id#filter=unread" } } };
-  assert.equal(peek.peekUrl(tab), "https://mail.proton.me/u/1/almost-all-mail#filter=unread");
+  const stub = spec => ({ linkedBrowser: { currentURI: { spec } } });
+  assert.equal(
+    peek.peekUrl(stub("https://mail.proton.me/u/1/almost-all-mail/message-id#filter=unread")),
+    "https://mail.proton.me/u/1/almost-all-mail#filter=unread"
+  );
+  assert.equal(
+    peek.peekUrl(stub("https://mail.proton.me/u/1/inbox#category=primary")),
+    "https://mail.proton.me/u/1/inbox#category=primary&filter=unread"
+  );
+  assert.equal(
+    peek.peekUrl(stub("https://mail.proton.me/u/0/inbox")),
+    "https://mail.proton.me/u/0/inbox#filter=unread"
+  );
+});
+
+test("read rows are dropped so only unread mail is listed", () => {
+  const peek = new ProtonPeek();
+  const tab = { linkedBrowser: { contentTitle: "Inbox | Proton Mail" }, label: "Inbox" };
+  const res = peek.packageResult(tab, {
+    title: "Inbox",
+    entries: [
+      { id: "a", unread: true },
+      { id: "b", unread: false },
+      { id: "c", unread: null },
+    ],
+  });
+  assert.deepEqual(res.entries.map(e => e.id), ["a", "c"]);
 });
 
 test("ping verifies document access without emitting trace messages", () => {
@@ -211,7 +243,7 @@ test("release builds have no routine or debug console logging", () => {
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.4.0");
+  assert.equal(theme.version, "1.5.0");
   assert.ok(theme.scripts["gmail-peek.uc.js"]);
   assert.ok(theme.scripts["proton-peek.uc.js"]);
   assert.equal(preferences.some(pref => pref.property.endsWith(".debug")), false);

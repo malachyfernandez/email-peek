@@ -241,12 +241,10 @@
     #gmailpeek-panel .gp-refreshing {
       position: absolute;
       left: 14px;
-      right: 48px;
       bottom: 15px;
       font-size: 11px;
       font-weight: 400;
       color: var(--gp-dim);
-      text-align: right;
     }
   `;
 
@@ -273,6 +271,8 @@
       this.boundTabs = new WeakSet();
       this.refreshSequence = 0;
       this.refreshing = false;
+      this.dotsTimer = null;
+      this.refreshDots = 0;
 
       this.onHoverIn = this.onHoverIn.bind(this);
       this.onHoverOut = this.onHoverOut.bind(this);
@@ -320,6 +320,7 @@
 
     destroy() {
       clearInterval(this.badgeInterval);
+      clearInterval(this.dotsTimer);
       clearTimeout(this.hoverTimer);
       clearTimeout(this.hideTimer);
       this.observer?.disconnect();
@@ -598,10 +599,25 @@
         status.setAttribute("aria-live", "polite");
         this.box.appendChild(status);
       }
+      clearInterval(this.dotsTimer);
+      this.dotsTimer = null;
       const cache = this.currentTab && this.caches.get(this.accountForTab(this.currentTab));
       const refreshedAt = cache?.refreshedAt || (cache?.data && cache.t);
       const stamp = refreshedAt ? `Refreshed ${new Date(refreshedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "";
-      status.textContent = on ? "Refreshing…" : cache?.error ? `Refresh failed${stamp ? " · " + stamp : ""}` : stamp;
+      if (on) {
+        this.refreshDots = 0;
+        status.textContent = "Refreshing.";
+        this.dotsTimer = setInterval(() => {
+          const s = this.box?.querySelector(".gp-refreshing");
+          if (!s) return;
+          this.refreshDots = (this.refreshDots % 3) + 1;
+          s.textContent = "Refreshing" + ".".repeat(this.refreshDots);
+        }, 300);
+      } else {
+        status.textContent = cache?.error
+          ? `Refresh failed${stamp ? " · " + stamp : ""}`
+          : stamp;
+      }
       this.box.querySelector(".gp-refresh")?.classList.toggle("gp-spin", on);
     }
 
@@ -825,6 +841,8 @@
     onPanelHidden() {
       this.refreshSequence++;
       this.refreshing = false;
+      clearInterval(this.dotsTimer);
+      this.dotsTimer = null;
       if (this.hoverTab) this.restoreTooltip(this.hoverTab);
       this.hoverTab = null;
       this.currentTab = null;

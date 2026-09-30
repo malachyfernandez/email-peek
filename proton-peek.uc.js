@@ -611,12 +611,10 @@ export class ProtonPeekChild extends _PPBase {
     #protonpeek-panel .pp-refreshing {
       position: absolute;
       left: 14px;
-      right: 48px;
       bottom: 15px;
       font-size: 11px;
       font-weight: 400;
       color: var(--pp-dim);
-      text-align: right;
     }
   `;
 
@@ -642,6 +640,8 @@ export class ProtonPeekChild extends _PPBase {
       this.boundTabs = new WeakSet();
       this.refreshSequence = 0;
       this.refreshing = false;
+      this.dotsTimer = null;
+      this.refreshDots = 0;
       this.readyActors = new WeakSet();
       this.querySequence = 0;
 
@@ -690,6 +690,7 @@ export class ProtonPeekChild extends _PPBase {
 
     destroy() {
       clearInterval(this.badgeInterval);
+      clearInterval(this.dotsTimer);
       clearTimeout(this.hoverTimer);
       clearTimeout(this.hideTimer);
       this.observer?.disconnect();
@@ -870,7 +871,8 @@ export class ProtonPeekChild extends _PPBase {
 
     // Normalized list URL: <origin>/u/N/<label>#hash — conversation/message
     // id segments and query params are stripped so the phantom always lands
-    // on a list view, while the hash (#filter=unread, #category=...) is kept.
+    // on a list view. The hash's other params (#category=...) are kept, but
+    // filter=unread is always forced in: the peek shows unread mail only.
     peekUrl(tab) {
       const spec = this.tabUrl(tab);
       try {
@@ -878,9 +880,11 @@ export class ProtonPeekChild extends _PPBase {
         const m = u.pathname.match(/^\/u\/(\d+)\/([a-z0-9-]+)/i);
         const acct = m ? m[1] : this.accountForTab(tab);
         const label = m ? m[2] : "inbox";
-        return `${u.origin}/u/${acct}/${label}${u.hash || ""}`;
+        const params = new URLSearchParams(u.hash.replace(/^#/, ""));
+        params.set("filter", "unread");
+        return `${u.origin}/u/${acct}/${label}#${params}`;
       } catch {}
-      return this.inboxUrl(tab);
+      return `${this.inboxUrl(tab)}#filter=unread`;
     }
 
     phantomContainer() {
@@ -1062,10 +1066,11 @@ export class ProtonPeekChild extends _PPBase {
     }
 
     packageResult(tab, res) {
-      const entries = res.entries || [];
+      // Unread only: rows proven read are dropped. Undetermined (null) rows
+      // are kept — better to show one extra row than hide real unread mail.
+      const entries = (res.entries || []).filter(e => e.unread !== false);
       const count =
-        this.countFromTitle(tab, res.title) ??
-        entries.filter(e => e.unread !== false).length;
+        this.countFromTitle(tab, res.title) ?? entries.length;
       return { count, entries, title: res.title, url: res.url };
     }
 
@@ -1177,10 +1182,25 @@ export class ProtonPeekChild extends _PPBase {
         status.setAttribute("aria-live", "polite");
         this.box.appendChild(status);
       }
+      clearInterval(this.dotsTimer);
+      this.dotsTimer = null;
       const cache = this.currentTab && this.caches.get(this.currentTab);
       const refreshedAt = cache?.refreshedAt || (cache?.data && cache.t);
       const stamp = refreshedAt ? `Refreshed ${new Date(refreshedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "";
-      status.textContent = on ? "Refreshing…" : cache?.error ? `Refresh failed${stamp ? " · " + stamp : ""}` : stamp;
+      if (on) {
+        this.refreshDots = 0;
+        status.textContent = "Refreshing.";
+        this.dotsTimer = setInterval(() => {
+          const s = this.box?.querySelector(".pp-refreshing");
+          if (!s) return;
+          this.refreshDots = (this.refreshDots % 3) + 1;
+          s.textContent = "Refreshing" + ".".repeat(this.refreshDots);
+        }, 300);
+      } else {
+        status.textContent = cache?.error
+          ? `Refresh failed${stamp ? " · " + stamp : ""}`
+          : stamp;
+      }
       this.box.querySelector(".pp-refresh")?.classList.toggle("pp-spin", on);
     }
 
@@ -1239,7 +1259,7 @@ export class ProtonPeekChild extends _PPBase {
       const { entries } = cache.data;
       if (!entries.length) {
         box.appendChild(
-          el("div", "pp-status", "No mail on this page — sign in or open the inbox?")
+          el("div", "pp-status", "No unread mail — you're all caught up.")
         );
         const status = box.lastChild;
         status.classList.add("pp-link");
@@ -1462,6 +1482,8 @@ export class ProtonPeekChild extends _PPBase {
     onPanelHidden() {
       this.refreshSequence++;
       this.refreshing = false;
+      clearInterval(this.dotsTimer);
+      this.dotsTimer = null;
       if (this.hoverTab) this.restoreTooltip(this.hoverTab);
       this.hoverTab = null;
       this.currentTab = null;
