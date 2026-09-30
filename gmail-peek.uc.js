@@ -472,15 +472,42 @@
 
     // ---------- feed ----------
 
-    async fetchFeed(acct) {
-      const res = await fetch(feedUrl(acct), {
-        credentials: "include",
-        cache: "no-cache",
-      });
+    // The mod fetches from the chrome context, whose cookie jar is the
+    // DEFAULT one — a Gmail session that lives inside a container tab or a
+    // private window is invisible to it and the feed 401s. Pass the tab's
+    // own cookieJarSettings (and, when the tab is a live google page, its
+    // principal so SameSite=Lax cookies attach) so the request rides the
+    // same jar the tab uses.
+    jarInitFor(tab) {
+      const init = { credentials: "include", cache: "no-cache" };
+      try {
+        const bc = tab?.linkedBrowser?.browsingContext;
+        const cjs =
+          bc?.cookieJarSettings || bc?.currentWindowGlobal?.cookieJarSettings;
+        if (cjs) {
+          init.cookieJarSettings = cjs;
+          const ucid = cjs.originAttributes?.userContextId;
+          if (ucid) init._ucid = ucid; // diagnostic only
+        }
+        const tp = tab?.linkedBrowser?.contentPrincipal;
+        if (tp && /(^|\.)google\.com$/i.test(tp.asciiHost || "")) {
+          init.triggeringPrincipal = tp;
+        }
+      } catch {}
+      return init;
+    }
+
+    async fetchFeed(acct, tab) {
+      const init = this.jarInitFor(tab);
+      const res = await fetch(feedUrl(acct), init);
       if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
         throw new Error("signed-out");
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(
+          `HTTP ${res.status}${init._ucid ? ` · ctx${init._ucid}` : ""}`
+        );
+      }
       const text = await res.text();
       const doc = new DOMParser().parseFromString(text, "text/xml");
       if (doc.getElementsByTagName("parsererror").length) {
@@ -505,7 +532,7 @@
       return { count, entries };
     }
 
-    getFeed(acct, force = false) {
+    getFeed(acct, force = false, tab = null) {
       let cache = this.caches.get(acct);
       if (!cache) {
         cache = { t: 0, data: null, error: null };
@@ -517,7 +544,7 @@
       if (!this.inflights.has(acct)) {
         this.inflights.set(
           acct,
-          this.fetchFeed(acct)
+          this.fetchFeed(acct, tab)
             .then(data => {
               const t = Date.now();
               this.caches.set(acct, { t, refreshedAt: t, data, error: null });
@@ -763,7 +790,7 @@
       const acct = this.accountForTab(tab);
       this.setRefreshing(true);
       try {
-        const cache = await this.getFeed(acct, true);
+        const cache = await this.getFeed(acct, true, tab);
         if (sequence !== this.refreshSequence || this.currentTab !== tab || this.panel.state === "closed") return;
         if (cache.data) this.paintBadge(tab, cache.data.count);
         this.render(cache, acct);
@@ -833,7 +860,7 @@
         byAccount.get(acct).push(tab);
       }
       for (const [acct, acctTabs] of byAccount) {
-        const cache = await this.getFeed(acct);
+        const cache = await this.getFeed(acct, false, acctTabs[0]);
         if (cache.error || !cache.data) continue;
         for (const tab of acctTabs) {
           this.paintBadge(tab, cache.data.count);

@@ -715,3 +715,52 @@ test("iCloud peek URL is always the mail root", () => {
   );
   assert.equal(peek.inboxUrl(tab("https://www.icloud.com/mail/")), "https://www.icloud.com/mail/");
 });
+
+test("Gmail fetch rides the tab's own cookie jar and principal", async () => {
+  const peek = new GmailPeek();
+  const cjs = { originAttributes: { userContextId: 7 } };
+  const tp = { asciiHost: "mail.google.com" };
+  const tab = {
+    linkedBrowser: {
+      browsingContext: { cookieJarSettings: cjs },
+      contentPrincipal: tp,
+    },
+  };
+  const init = peek.jarInitFor(tab);
+  assert.equal(init.cookieJarSettings, cjs);
+  assert.equal(init.triggeringPrincipal, tp);
+  assert.equal(init._ucid, 7);
+  assert.equal(init.credentials, "include");
+});
+
+test("Gmail fetch falls back to the default jar for plain tabs", () => {
+  const peek = new GmailPeek();
+  const init = peek.jarInitFor({
+    linkedBrowser: {
+      browsingContext: {},
+      contentPrincipal: { asciiHost: "mail.google.com" },
+    },
+  });
+  assert.ok(!init.cookieJarSettings);
+  assert.ok(init.triggeringPrincipal); // same-site google principal still applies
+  const stray = peek.jarInitFor({
+    linkedBrowser: { contentPrincipal: { asciiHost: "evil.example" } },
+  });
+  assert.ok(!stray.triggeringPrincipal);
+});
+
+test("Gmail 401 annotates the container context in the error", async () => {
+  const peek = new GmailPeek();
+  gmailContext.fetch = async () => ({ url: "https://mail.google.com/mail/u/0/feed/atom", ok: false, status: 401 });
+  const cjs = { originAttributes: { userContextId: 3 } };
+  await assert.rejects(
+    peek.fetchFeed("0", {
+      linkedBrowser: {
+        browsingContext: { cookieJarSettings: cjs },
+        contentPrincipal: { asciiHost: "mail.google.com" },
+      },
+    }),
+    /HTTP 401 · ctx3/
+  );
+  await assert.rejects(peek.fetchFeed("0", null), /HTTP 401$/);
+});
