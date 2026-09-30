@@ -4,8 +4,8 @@
 
 Peek at your inbox without leaving whatever you were actually doing.
 
-Hover a pinned Gmail or Proton Mail tab in Zen and a small popup slides in
-with your unread mail — sender, subject, and when it landed. Click an email
+Hover a pinned Gmail, Proton Mail, or Outlook tab in Zen and a small popup
+slides in with your unread mail — sender, subject, and when it landed. Click an email
 to open it in the tab, or hit `+` to fire off a new one. That's the whole
 trick: no API keys, no OAuth ceremony, no third-party service. It reads mail
 through the session you're already signed in with.
@@ -17,8 +17,9 @@ through the session you're already signed in with.
 - **Refreshes every time you hover.** The bottom-left corner narrates
   `Refreshing.` → `..` → `...`, then settles into `Refreshed 12:34 PM`
   so you always know how stale the list isn't.
-- **Multi-account aware.** It reads `/u/N/` off each tab's own URL, so your
-  work inbox and your other work inbox each get their own preview.
+- **Multi-account aware.** It reads the account index off each tab's own URL
+  (`/u/N/` for Gmail/Proton, `/mail/N/` for Outlook), so your work inbox and
+  your other work inbox each get their own preview.
 - **Compact-mode friendly.** In Zen's compact mode the sidebar politely
   holds still while the popup is open instead of folding away mid-peek.
 
@@ -51,6 +52,18 @@ follows the tab's **pinned home view** — so if you wander the pinned tab off
 to Sent or a settings page, the popup still shows your unread pile (and if
 the home can't be found, it falls back to all-mail unread for that account).
 
+## + Outlook Peek
+
+And the blue corner of the triangle. Same hidden-browser trick as Proton —
+Outlook is a client-side SPA with no feed, so Email Peek reads the rendered
+message list out of a tucked-away `<browser>` that shares your session and
+never sleeps. It anchors on OWA's semantic hooks (`data-convid`, `role=option`,
+the `Unread` prefix in each row's accessible name, the `New mail` button)
+rather than Microsoft's minified classnames, so a cosmetic Outlook refresh
+should degrade gracefully instead of vanishing. Works with outlook.live.com,
+outlook.com, and the Office 365 flavors. Also follows the pinned home view,
+unread-only, badge included.
+
 ## Settings
 
 In Sine → Mod Settings (or `about:config`):
@@ -63,8 +76,8 @@ In Sine → Mod Settings (or `about:config`):
 | `mod.gmailpeek.hide_delay` | `150` | ms before the preview closes on mouse-out |
 | `mod.gmailpeek.show_badge` | `true` | Unread badge on the tab icon |
 
-The Proton half takes the same set under `mod.protonpeek.*`, plus
-`mod.protonpeek.enabled` to toggle it independently.
+The Proton and Outlook halves take the same set under `mod.protonpeek.*` and
+`mod.outlookpeek.*`, each with an `enabled` pref to toggle it independently.
 
 ## Under the hood
 
@@ -88,6 +101,13 @@ For the curious; nothing below is required reading.
 - Clicking a row navigates the tab to Proton's canonical
   `/u/N/<label>/<elementId>` route. The unread badge reads the `(N)` prefix
   Proton puts in the tab title.
+- **Outlook** uses the same phantom-browser + actor architecture, tuned to
+  OWA's rendered DOM: rows are `[data-convid][role=option]` in the
+  `#MailList` listbox, unread rows announce themselves with an `Unread`
+  prefix in their `aria-label`, sender lives in `span[title="<email>"]`, and
+  the timestamp hides in a `title` attribute. Clicking a row opens the
+  canonical `/mail/N/<folder>/id/<convid>` route; `+` hunts the
+  `New mail` button and falls back to `/mail/deeplink/compose`.
 - Requires Sine (or fx-autoconfig) with the `chrome://userscripts/` mapping.
   Actor modules are written to `<profile>/chrome/JS/proton-peek/` on first
   run; if no chrome URI resolves, it falls back to `data:` module URIs.

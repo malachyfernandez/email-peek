@@ -64,5 +64,41 @@
     "label": "Proton Peek — show an unread-count badge on the tab icon",
     "type": "checkbox",
     "defaultValue": true
+  },
+  {
+    "property": "mod.outlookpeek.enabled",
+    "label": "Outlook Peek — enable hover previews for pinned Outlook tabs",
+    "type": "checkbox",
+    "defaultValue": true
+  },
+  {
+    "property": "mod.outlookpeek.account",
+    "label": "Fallback Outlook account index — used only when a tab's URL has no /mail/N/ in it",
+    "type": "string",
+    "defaultValue": "0"
+  },
+  {
+    "property": "mod.outlookpeek.max_items",
+    "label": "Outlook Peek — max emails shown in the preview",
+    "type": "string",
+    "defaultValue": "6"
+  },
+  {
+    "property": "mod.outlookpeek.hover_delay",
+    "label": "Outlook Peek — hover delay before the preview opens (ms)",
+    "type": "string",
+    "defaultValue": "400"
+  },
+  {
+    "property": "mod.outlookpeek.hide_delay",
+    "label": "Outlook Peek — delay before the preview closes after the mouse leaves (ms)",
+    "type": "string",
+    "defaultValue": "150"
+  },
+  {
+    "property": "mod.outlookpeek.show_badge",
+    "label": "Outlook Peek — show an unread-count badge on the tab icon",
+    "type": "checkbox",
+    "defaultValue": true
   }
 ]

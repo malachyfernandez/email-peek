@@ -26,6 +26,14 @@ vm.runInNewContext(readFileSync(new URL("./gmail-peek.uc.js", import.meta.url), 
   "  globalThis.GmailPeek = GmailPeek; return;\n  const boot = () => {"
 ), gmailContext);
 const { GmailPeek } = gmailContext;
+const outlookSource = readFileSync(new URL("./outlook-peek.uc.js", import.meta.url), "utf8");
+const outlookContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
+vm.runInNewContext(outlookSource.replace(
+  "  const boot = () => {",
+  "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, OutlookPeek, ensureActor }; return;\n  const boot = () => {"
+), outlookContext);
+const { CHILD_SOURCE: O_CHILD_SOURCE, PARENT_SOURCE: O_PARENT_SOURCE, OutlookPeek } = outlookContext.subject;
+outlookContext.document = { createElementNS: () => uiNode() };
 
 function uiNode() {
   return {
@@ -54,6 +62,7 @@ context.document = gmailContext.document = { createElementNS: () => uiNode() };
 for (const [name, Peek, prefix, get, load] of [
   ["Gmail", GmailPeek, "gp", "getFeed", "fetchFeed"],
   ["Proton", ProtonPeek, "pp", "getPeek", "scrapeTab"],
+  ["Outlook", OutlookPeek, "op", "getPeek", "scrapeTab"],
 ]) {
   function fixture() {
     const peek = new Peek();
@@ -254,14 +263,21 @@ test("ping verifies document access without emitting trace messages", () => {
 
 test("release builds have no routine or debug console logging", () => {
   const gmailSource = readFileSync(new URL("./gmail-peek.uc.js", import.meta.url), "utf8");
-  for (const code of [source, gmailSource, CHILD_SOURCE, PARENT_SOURCE]) {
-    assert.doesNotMatch(code, /console\.log|\bdebug\(|ProtonPeek:Trace/);
+  for (const code of [source, gmailSource, outlookSource, CHILD_SOURCE, PARENT_SOURCE, O_CHILD_SOURCE, O_PARENT_SOURCE]) {
+    assert.doesNotMatch(code, /console\.log|\bdebug\(|Peek:Trace/);
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.5.2");
+  assert.equal(theme.version, "1.6.0");
   assert.ok(theme.scripts["gmail-peek.uc.js"]);
   assert.ok(theme.scripts["proton-peek.uc.js"]);
+  assert.ok(theme.scripts["outlook-peek.uc.js"]);
+  for (const pref of ["enabled", "account", "max_items", "hover_delay", "hide_delay", "show_badge"]) {
+    assert.ok(
+      preferences.some(p => p.property === `mod.outlookpeek.${pref}`),
+      `missing mod.outlookpeek.${pref}`
+    );
+  }
   assert.equal(preferences.some(pref => pref.property.endsWith(".debug")), false);
 });
 
@@ -357,5 +373,176 @@ test("an SPA shell is not accepted as a successfully empty mailbox", async () =>
     await assert.rejects(peek.scrapeTab({}), /mailbox-not-rendered/);
   } finally {
     context.Services.prefs = previous;
+  }
+});
+
+// ---------- Outlook Peek ----------
+
+function outlookScraper(document) {
+  const scope = { JSWindowActorChild: class {}, console };
+  vm.runInNewContext(O_CHILD_SOURCE.replace("export class OutlookPeekChild", "globalThis.OutlookPeekChild = class OutlookPeekChild"), scope);
+  const child = new scope.OutlookPeekChild();
+  child.document = document;
+  return child;
+}
+
+// Stub shaped like a real OWA message row from outlook.live.com:
+// <div role="option" data-convid aria-posinset aria-label="Unread Collapsed
+//   <sender> <subject> <time> <preview> ...">
+// with span[title=email] sender and a date-titled span for the time.
+function owaRow({ ariaLabel, markAs = "Mark as read" } = {}) {
+  const sender = {
+    textContent: "Malachy Fernandez",
+    getAttribute: n => (n === "title" ? "malachyfernandez@gmail.com" : null),
+    contains: () => false,
+  };
+  const time = {
+    textContent: "4:41\nAM",
+    getAttribute: n => (n === "title" ? "Wed 9/30/2026 4:41 AM" : n === "datetime" ? null : null),
+    contains: () => false,
+    parentElement: null,
+  };
+  const subjectWrap = { textContent: "hey!", contains: () => false };
+  time.parentElement = { children: [subjectWrap, time] };
+  return {
+    localName: "div",
+    id: "AQAAB2ox5oUBAAAISmAc9wAAAAA=",
+    classList: { contains: () => false },
+    ariaLabel:
+      ariaLabel ??
+      "Unread Collapsed Malachy Fernandez hey! 4:41 AM ok buddy! On Wed, Sep 30, 2026 at 12:41 PM Malachy Fernandez <malachyfernandez@outlook.com> wrote: Making a connection now! No conversations selected",
+    getAttribute(name) {
+      if (name === "data-convid") return "AQQkCONV";
+      if (name === "aria-label") return this.ariaLabel;
+      return null;
+    },
+    querySelector(sel) {
+      if (/^time|^time\[/.test(sel)) return null;
+      if (/Mark as unread/i.test(sel)) return markAs === "Mark as unread" ? {} : null;
+      if (/Mark as read/i.test(sel)) return markAs === "Mark as read" ? {} : null;
+      return null;
+    },
+    querySelectorAll(sel) {
+      if (sel === "[title]") return [sender, time];
+      return [];
+    },
+  };
+}
+
+function owaDoc(rows) {
+  return {
+    body: {},
+    title: "(2) Mail - Malachy Fernandez - Outlook",
+    location: { href: "https://outlook.live.com/mail/0/inbox", hostname: "outlook.live.com" },
+    querySelector: sel =>
+      sel === "#app" ? { childElementCount: 4 } : /New mail/i.test(sel) ? {} : null,
+    querySelectorAll: sel => (sel.includes("data-convid") ? rows : []),
+  };
+}
+
+test("Outlook runtime-generated actor modules parse, not just their wrapper", () => {
+  for (const module of [O_PARENT_SOURCE, O_CHILD_SOURCE]) {
+    const result = spawnSync(process.execPath, ["--input-type=module", "--check"], { input: module, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  assert.equal(O_CHILD_SOURCE.includes("\b"), false, "no backspace characters in embedded regexes");
+});
+
+test("Outlook collect extracts sender, subject, displayed date and unread state", () => {
+  const result = outlookScraper(owaDoc([owaRow()])).collect(6);
+  assert.equal(result.rowCount, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.entries[0])), {
+    id: "AQQkCONV",
+    subject: "hey!",
+    sender: "Malachy Fernandez",
+    time: "4:41 AM",
+    fullDate: "Wed 9/30/2026 4:41 AM",
+    unread: true,
+    index: 0,
+  });
+});
+
+test("Outlook unread state follows aria prefix and mark-as affordances", () => {
+  const child = outlookScraper(null);
+  assert.equal(child.isUnread(owaRow()), true);
+  // A read row offers "Mark as unread" instead.
+  assert.equal(
+    child.isUnread(owaRow({ ariaLabel: "Collapsed Sender Two subject 9:00 AM", markAs: "Mark as unread" })),
+    false
+  );
+  // Unknown stays undetermined rather than hidden.
+  const bare = owaRow({ ariaLabel: "no signal here" });
+  bare.querySelector = () => null;
+  assert.equal(child.isUnread(bare), null);
+});
+
+test("Outlook peek URL uses the pinned home view, not the wandering tab", () => {
+  const peek = new OutlookPeek();
+  const stub = (spec, home) => ({
+    linkedBrowser: { currentURI: { spec } },
+    _zenPinnedInitialState: home ? { entry: { url: home } } : undefined,
+  });
+  // Pinned home wins; the trailing /id/<conv> detail segment is stripped.
+  assert.equal(
+    peek.peekUrl(stub(
+      "https://outlook.live.com/mail/0/sentitems",
+      "https://outlook.live.com/mail/0/inbox/id/AQQkCONVID"
+    )),
+    "https://outlook.live.com/mail/0/inbox"
+  );
+  // A bare /mail/ home lands on the inbox.
+  assert.equal(
+    peek.peekUrl(stub("https://outlook.live.com/mail/0/sentitems", "https://outlook.live.com/mail/")),
+    "https://outlook.live.com/mail/0/inbox"
+  );
+  // No pinned state: only the account number is trusted.
+  assert.equal(
+    peek.peekUrl(stub("https://outlook.live.com/mail/2/sentitems")),
+    "https://outlook.live.com/mail/2/inbox"
+  );
+  // Entry URLs use OWA's /id/<convid> detail route.
+  const tab = stub("https://outlook.live.com/mail/0/inbox", "https://outlook.live.com/mail/0/inbox");
+  assert.equal(
+    peek.entryUrl(tab, "AQQkCONV"),
+    "https://outlook.live.com/mail/0/inbox/id/AQQkCONV"
+  );
+});
+
+test("Outlook read rows are dropped so only unread mail is listed", () => {
+  const peek = new OutlookPeek();
+  const tab = { linkedBrowser: { contentTitle: "Mail - Name - Outlook" }, label: "Mail" };
+  const res = peek.packageResult(tab, {
+    title: "Mail",
+    entries: [
+      { id: "a", unread: true },
+      { id: "b", unread: false },
+      { id: "c", unread: null },
+    ],
+  });
+  assert.deepEqual(res.entries.map(e => e.id), ["a", "c"]);
+  assert.equal(res.count, 2);
+});
+
+test("Outlook title count is read from the (N) prefix", () => {
+  const peek = new OutlookPeek();
+  const tab = { linkedBrowser: { contentTitle: "(7) Mail - Name - Outlook" } };
+  assert.equal(peek.countFromTitle(tab), 7);
+  assert.equal(peek.countFromTitle({ linkedBrowser: { contentTitle: "Mail - Name - Outlook" } }), null);
+});
+
+test("Outlook empty SPA shell is not accepted as a successfully empty mailbox", async () => {
+  const peek = new OutlookPeek();
+  const previous = outlookContext.Services.prefs;
+  outlookContext.Services.prefs = {
+    PREF_INT: 2,
+    getPrefType: name => (name.endsWith("load_timeout") ? 2 : 0),
+    getIntPref: () => 5,
+  };
+  peek.phantomFor = () => ({ browser: {} });
+  peek.directScrape = () => ({ title: "Outlook", entries: [], diagnostics: { compose: false, appChildren: 0 } });
+  try {
+    await assert.rejects(peek.scrapeTab({}), /mailbox-not-rendered/);
+  } finally {
+    outlookContext.Services.prefs = previous;
   }
 });
