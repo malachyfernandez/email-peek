@@ -39,7 +39,8 @@ through the session you're already signed in with.
 
 The Gmail half, pictured up top. Hover your pinned Gmail tab and your unread
 mail appears — sender, subject, a snippet, and how long ago it arrived.
-Requires Gmail signed in **in the default (non-container) context**.
+Works with Gmail signed in across the default context or inside
+**Firefox/Zen Multi-Account Containers** (Work, Personal, etc.).
 
 ## + Proton Peek
 
@@ -132,9 +133,6 @@ For the curious; nothing below is required reading.
 
 ## Known limitations
 
-- Container-isolated Gmail sessions can't be read via the Atom feed
-  (cookies live in the container jar). Would need a Gmail API + OAuth
-  variant.
 - Zen's native tab tooltip is suppressed via `popupshowing` interception;
   if a Zen update changes tooltip plumbing it may reappear alongside the
   panel.

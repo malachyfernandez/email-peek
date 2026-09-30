@@ -1336,10 +1336,13 @@ export class ICloudPeekChild extends _PPBase {
       const y = sy + r.top;
       if (this.panel.state === "closed") {
         try {
-          this.panel.openPopupAtScreen(x, y, false);
-        } catch (err) {
-          console.warn(TAG, "openPopupAtScreen failed, trying anchor:", err);
           this.panel.openPopup(tab, "after_start", 4, 0, false, false);
+        } catch (err) {
+          try {
+            this.panel.openPopupAtScreen(x, y, false);
+          } catch (e2) {
+            console.warn(TAG, "openPopup failed:", e2);
+          }
         }
       }
       this.holdCompactSidebar();
