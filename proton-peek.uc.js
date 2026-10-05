@@ -56,7 +56,7 @@
   // renders the whole report into a real browser tab — plain HTML, plain
   // links, no chrome APIs required at click time.
   const EPDiag = (window.__EPDiag ||= (() => {
-    const VERSION = "1.7.3";
+    const VERSION = "1.7.5";
     const CONTACT = {
       email: "malachyfernandez@gmail.com",
       github: "https://github.com/malachyfernandez/email-peek",
@@ -820,6 +820,17 @@ export class ProtonPeekChild extends _PPBase {
       --pp-dim: color-mix(in srgb, var(--pp-fg) 55%, transparent);
       --pp-hover: color-mix(in srgb, var(--pp-fg) 8%, transparent);
       --pp-border: color-mix(in srgb, var(--pp-fg) 15%, transparent);
+    }
+    #protonpeek-panel {
+      /* The native macOS menu shape can't be re-rounded, so draw the frame
+         ourselves: inner radius = --panel-border-radius, outer = inner + the
+         gap between the edges (shadow margin + border). */
+      appearance: none;
+      background-color: Menu;
+      border-radius: calc(var(--panel-border-radius, 10px) + var(--panel-box-shadow-margin, 0px) + 1px);
+    }
+    #protonpeek-panel::part(content) {
+      border-radius: var(--panel-border-radius, 10px);
     }
     #protonpeek-panel .pp-box {
       width: 340px;

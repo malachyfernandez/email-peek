@@ -29,7 +29,7 @@
   // renders the whole report into a real browser tab — plain HTML, plain
   // links, no chrome APIs required at click time.
   const EPDiag = (window.__EPDiag ||= (() => {
-    const VERSION = "1.7.3";
+    const VERSION = "1.7.5";
     const CONTACT = {
       email: "malachyfernandez@gmail.com",
       github: "https://github.com/malachyfernandez/email-peek",
@@ -450,6 +450,17 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       --gp-dim: color-mix(in srgb, var(--gp-fg) 55%, transparent);
       --gp-hover: color-mix(in srgb, var(--gp-fg) 8%, transparent);
       --gp-border: color-mix(in srgb, var(--gp-fg) 15%, transparent);
+    }
+    #gmailpeek-panel {
+      /* The native macOS menu shape can't be re-rounded, so draw the frame
+         ourselves: inner radius = --panel-border-radius, outer = inner + the
+         gap between the edges (shadow margin + border). */
+      appearance: none;
+      background-color: Menu;
+      border-radius: calc(var(--panel-border-radius, 10px) + var(--panel-box-shadow-margin, 0px) + 1px);
+    }
+    #gmailpeek-panel::part(content) {
+      border-radius: var(--panel-border-radius, 10px);
     }
     #gmailpeek-panel .gp-box {
       width: 340px;
