@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import vm from "node:vm";
 
+const testConsole = { ...console, warn() {} };
 const source = readFileSync(new URL("./proton-peek.uc.js", import.meta.url), "utf8");
 const context = {
   window: {},
-  console,
+  console: testConsole,
   setTimeout,
   clearTimeout,
   // unref so a leftover interval can't keep the test process alive
@@ -20,14 +21,14 @@ vm.runInNewContext(source.replace(
   "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, ProtonPeek, ensureActor }; return;\n  const boot = () => {"
 ), context);
 const { CHILD_SOURCE, PARENT_SOURCE, ProtonPeek } = context.subject;
-const gmailContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services };
+const gmailContext = { window: {}, console: testConsole, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services };
 vm.runInNewContext(readFileSync(new URL("./gmail-peek.uc.js", import.meta.url), "utf8").replace(
   "  const boot = () => {",
   "  globalThis.GmailPeek = GmailPeek; return;\n  const boot = () => {"
 ), gmailContext);
 const { GmailPeek } = gmailContext;
 const outlookSource = readFileSync(new URL("./outlook-peek.uc.js", import.meta.url), "utf8");
-const outlookContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
+const outlookContext = { window: {}, console: testConsole, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
 vm.runInNewContext(outlookSource.replace(
   "  const boot = () => {",
   "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, OutlookPeek, ensureActor }; return;\n  const boot = () => {"
@@ -35,7 +36,7 @@ vm.runInNewContext(outlookSource.replace(
 const { CHILD_SOURCE: O_CHILD_SOURCE, PARENT_SOURCE: O_PARENT_SOURCE, OutlookPeek } = outlookContext.subject;
 outlookContext.document = { createElementNS: () => uiNode() };
 const icloudSource = readFileSync(new URL("./icloud-peek.uc.js", import.meta.url), "utf8");
-const icloudContext = { window: {}, console, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
+const icloudContext = { window: {}, console: testConsole, setTimeout, clearTimeout, setInterval: context.setInterval, clearInterval, Services: context.Services, URL, URLSearchParams };
 vm.runInNewContext(icloudSource.replace(
   "  const boot = () => {",
   "  globalThis.subject = { CHILD_SOURCE, PARENT_SOURCE, ICloudPeek, ensureActor }; return;\n  const boot = () => {"
@@ -277,9 +278,11 @@ test("release builds have no routine or debug console logging", () => {
   }
   const theme = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8"));
   const preferences = JSON.parse(readFileSync(new URL("./preferences.json", import.meta.url), "utf8"));
-  assert.equal(theme.version, "1.7.0");
   for (const script of ["gmail-peek.uc.js", "proton-peek.uc.js", "outlook-peek.uc.js", "icloud-peek.uc.js"]) {
     assert.ok(theme.scripts[script], `theme.scripts missing ${script}`);
+    const src = readFileSync(new URL("./" + script, import.meta.url), "utf8");
+    const declared = src.match(/const VERSION = "([^"]+)"/)?.[1];
+    assert.equal(declared, theme.version, `${script} VERSION must match theme.json version`);
   }
   for (const pref of ["enabled", "account", "max_items", "hover_delay", "hide_delay", "show_badge"]) {
     assert.ok(
@@ -763,4 +766,91 @@ test("Gmail 401 annotates the container context in the error", async () => {
     /HTTP 401 · ctx3/
   );
   await assert.rejects(peek.fetchFeed("0", null), /HTTP 401$/);
+});
+
+test("diagnostics singleton dedupes repeats and renders the log", () => {
+  const diag = gmailContext.window.__EPDiag;
+  assert.ok(diag, "EPDiag singleton exists after script load");
+  diag.log("test", "repeated line");
+  diag.log("test", "repeated line");
+  diag.log("test", "repeated line");
+  diag.log("test", "different line");
+  const out = diag.render();
+  assert.match(out, /repeated line \(x3\)/);
+  assert.match(out, /different line/);
+});
+
+test("diagnostics env snapshot carries version and contact info", () => {
+  const diag = gmailContext.window.__EPDiag;
+  const e = diag.env();
+  const themeVersion = JSON.parse(readFileSync(new URL("./theme.json", import.meta.url), "utf8")).version;
+  assert.equal(e.mod, `Email Peek v${themeVersion}`);
+  const text = diag.fullText();
+  assert.match(text, /malachyfernandez@gmail\.com/);
+  assert.match(text, /github\.com\/malachyfernandez\/email-peek/);
+  assert.match(text, /malachyf\.com/);
+  assert.match(text, /zero entries means no unread messages, not an error/);
+});
+
+test("diagnostics omits unavailable OS version fields", () => {
+  const previous = gmailContext.Services.appinfo;
+  gmailContext.Services.appinfo = { OS: "Darwin", XPCOMABI: "aarch64-gcc3" };
+  try {
+    assert.equal(gmailContext.window.__EPDiag.env().os, "Darwin (aarch64-gcc3)");
+  } finally {
+    gmailContext.Services.appinfo = previous;
+  }
+});
+
+test("diagnostics pages prioritize about/support and safely copy a plain report", () => {
+  for (const diag of [context.window.__EPDiag, gmailContext.window.__EPDiag, outlookContext.window.__EPDiag, icloudContext.window.__EPDiag]) {
+    const html = diag.html();
+    assert.match(html, /github\.com\/malachyfernandez\/email-peek/);
+    assert.match(html, /malachyf\.com/);
+    assert.match(html, /Something not working/);
+    assert.match(html, /<details><summary>Environment snapshot/);
+    assert.match(html, /<details><summary>Diagnostic log/);
+    assert.match(html, /https:\/\/mail\.google\.com\/mail\/\?view=cm/);
+    assert.doesNotMatch(html, /href=["']mailto:/i);
+    assert.match(html, /document\.execCommand\("copy"\)/);
+    assert.match(html, /copied = document\.execCommand/);
+    assert.doesNotMatch(html, /Select all &amp; copy/);
+    const pageScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    assert.ok(pageScript, "diagnostics page includes a complete script block");
+    const checked = spawnSync(process.execPath, ["--check"], { input: pageScript, encoding: "utf8" });
+    assert.equal(checked.status, 0, checked.stderr);
+  }
+});
+
+test("provider scans ignore unrelated pinned tabs and summarize only match changes", () => {
+  const peek = new GmailPeek();
+  const makeTab = (url, pinned = true) => ({
+    pinned,
+    linkedBrowser: { currentURI: { spec: url } },
+    hasAttribute: name => name === "zen-essential" && false,
+    addEventListener() {},
+  });
+  const mail = makeTab("https://mail.google.com/mail/u/0/");
+  const other = makeTab("https://calendar.google.com/calendar/u/0/r/week");
+  gmailContext.gBrowser = { tabs: [mail, other] };
+  const diag = gmailContext.window.__EPDiag;
+  const before = diag.render();
+  peek.scanTabs();
+  const first = diag.render();
+  assert.match(first, /scan: provider tab detection \| \{"provider":"Gmail","scanned":2,"matched":1\}/);
+  assert.doesNotMatch(first.slice(before.length), /calendar\.google\.com/);
+  peek.scanTabs();
+  assert.equal(diag.render(), first, "a stable scan does not add more noise");
+});
+
+test("every provider script carries the shared diagnostics core", () => {
+  for (const f of ["gmail-peek.uc.js", "proton-peek.uc.js", "outlook-peek.uc.js", "icloud-peek.uc.js"]) {
+    const src = readFileSync(new URL("./" + f, import.meta.url), "utf8");
+    assert.match(src, /window\.__EPDiag \|\|=/, `${f} owns-or-reuses the singleton`);
+    assert.match(src, /EPDiag\.boot\(/, `${f} boots diagnostics`);
+    assert.match(src, /menu_ToolsPopup/, `${f} adds the Tools menu entry`);
+    assert.match(src, /provider tab detection/, `${f} emits a tab-match summary`);
+    assert.doesNotMatch(src, /pinned\/essential tab not claimed/, `${f} omits unrelated pinned tabs`);
+    assert.doesNotMatch(src, /mailto:/i, `${f} avoids the OS email handler`);
+  }
 });

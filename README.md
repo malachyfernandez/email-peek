@@ -95,8 +95,10 @@ an `enabled` pref to toggle it independently.
 For the curious; nothing below is required reading.
 
 - **Gmail** fetches `https://mail.google.com/mail/u/N/feed/atom` from the
-  browser's chrome context, riding your existing session cookies. The feed
-  only ever contains unread mail, which is exactly what the popup shows.
+  browser's chrome context, riding your existing session cookies — including
+  the tab's own cookie jar, so container and private-window sessions work.
+  The feed only ever contains unread mail, which is exactly what the popup
+  shows.
 - **Proton** has no Atom feed and its API payload is end-to-end encrypted,
   so the mod keeps a hidden 1×1 `<browser>` per account — always loaded,
   never asleep, sharing the normal cookie jar — pointed at your mailbox view
@@ -130,11 +132,33 @@ For the curious; nothing below is required reading.
   Actor modules are written to `<profile>/chrome/JS/proton-peek/` on first
   run; if no chrome URI resolves, it falls back to `data:` module URIs.
 
+## Diagnostics and about page
+
+Open **Tools → About Email Peek**, click the `EP` button at the end of
+the nav bar, or click the `i` in any peek popup's header. The page introduces
+the mod and links to [GitHub](https://github.com/malachyfernandez/email-peek)
+and [malachyf.com](https://malachyf.com); support actions and troubleshooting
+come next, while the environment and detailed log stay collapsed until needed.
+
+**Email a support report** copies the report and opens a prefilled Gmail draft
+in Zen for you to paste it into (it does not send automatically or invoke the
+macOS email-app handler). **Copy report**
+copies a plain-text report rather than the page markup. Review the report
+before sharing: it contains app details, preferences, open tab URLs, and
+diagnostic events. The same text is also flushed to
+`<profile>/email-peek.log`.
+
+A provider response with HTTP 200 and the expected format is a successful
+fetch. Zero entries means no unread mail, not a failure. The log is easiest to
+follow in order: tab detection → hover → popup/request → response → render.
+Pinned tabs for unrelated sites are normal and are not logged as detection
+failures; provider scan summaries are emitted when the matched count changes.
+`providersLoaded` is the authoritative per-window script list; Sine/autoconfig
+and OS-version fields are best-effort hints, so a missing value alone is not a
+provider failure.
+
 ## Known limitations
 
-- Container-isolated Gmail sessions can't be read via the Atom feed
-  (cookies live in the container jar). Would need a Gmail API + OAuth
-  variant.
 - Zen's native tab tooltip is suppressed via `popupshowing` interception;
   if a Zen update changes tooltip plumbing it may reappear alongside the
   panel.

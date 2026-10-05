@@ -21,6 +21,337 @@
   const XHTML = "http://www.w3.org/1999/xhtml";
   const XUL = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
   const TAG = "[gmail-peek]";
+  // ---------- shared diagnostics ----------
+  // Identical in every email-peek script: whoever loads first owns the
+  // singleton on window.__EPDiag, so diagnostics survive even if sibling
+  // scripts fail to boot. Consecutive repeats dedupe (xN), everything flushes
+  // to <profile>/email-peek.log every few seconds and on unload, and "open"
+  // renders the whole report into a real browser tab — plain HTML, plain
+  // links, no chrome APIs required at click time.
+  const EPDiag = (window.__EPDiag ||= (() => {
+    const VERSION = "1.7.3";
+    const CONTACT = {
+      email: "malachyfernandez@gmail.com",
+      github: "https://github.com/malachyfernandez/email-peek",
+      site: "https://malachyf.com",
+    };
+    const MAX = 800;
+    const lines = [];
+    const loaded = {};
+    let dirty = false, flushTimer = null;
+    let uiDone = false, envLogged = false, hooked = false;
+
+    const safe = fn => { try { return fn(); } catch { return undefined; } };
+    const clip = (s, n = 300) => String(s).replace(/\s+/g, " ").slice(0, n);
+    const stamp = t => t.toISOString().slice(11, 23);
+    const esc = s => String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    function log(tag, msg, data) {
+      let m = clip(msg);
+      if (data !== undefined) {
+        try { m += " | " + clip(JSON.stringify(data)); } catch {}
+      }
+      const last = lines[lines.length - 1];
+      if (last && last.tag === tag && last.m === m) { last.n++; last.t = new Date(); }
+      else lines.push({ t: new Date(), tag, m, n: 1 });
+      if (lines.length > MAX) lines.splice(0, lines.length - MAX);
+      dirty = true;
+      if (!flushTimer) {
+        flushTimer = setTimeout(() => { flushTimer = null; flush(); }, 3000);
+      }
+    }
+
+    function tabInfo(tab) {
+      const spec = safe(() => tab.linkedBrowser?.currentURI?.spec) ||
+        safe(() => tab._zenPinnedInitialState?.entry?.url) || "";
+      const ucid = safe(() => Number(tab.getAttribute("usercontextid"))) || 0;
+      const container = safe(() =>
+        ucid ? ContextualIdentityService.getPublicIdentityFromId(ucid)?.name : null);
+      return {
+        url: clip(spec.replace(/[?#].*$/, ""), 120) || "(blank)",
+        pinned: !!safe(() => tab.pinned),
+        essential: !!safe(() => tab.hasAttribute("zen-essential")),
+        ucid: ucid || undefined,
+        container: container || undefined,
+      };
+    }
+
+    function env() {
+      const e = {};
+      e.mod = `Email Peek v${VERSION}`;
+      e.providersLoaded = { ...loaded };
+      e.app = safe(() => `${Services.appinfo.name} ${Services.appinfo.version} build ${Services.appinfo.appBuildID}`);
+      e.zen = safe(() => Services.prefs.getCharPref("zen.version")) ||
+        safe(() => Services.prefs.getCharPref("zen.browser.version"));
+      e.os = safe(() => {
+        const { OS, OSVersion, XPCOMABI } = Services.appinfo;
+        return [OS, OSVersion, XPCOMABI && `(${XPCOMABI})`].filter(Boolean).join(" ") || undefined;
+      });
+      e.privateWindow = safe(() => PrivateBrowsingUtils.isWindowPrivate(window));
+      e.locale = safe(() => Services.locale.appLocaleAsBCP47);
+      e.timezone = safe(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+      e.dpi = safe(() => window.devicePixelRatio);
+      e.screen = safe(() => `${window.screen.width}x${window.screen.height}, window ${window.innerWidth}x${window.innerHeight}`);
+      e.compactMode = safe(() => document.documentElement.hasAttribute("zen-compact-mode"));
+      e.fxAutoconfig = safe(() => typeof _uc !== "undefined" || typeof UC_API !== "undefined");
+      e.sine = safe(() => typeof window.Sine !== "undefined" || typeof window.sine !== "undefined" ||
+        !!document.getElementById("sine-settings"));
+      e.prefs = safe(() => {
+        const out = {};
+        for (const name of Services.prefs.getChildList("mod.")) {
+          if (/gmail|proton|outlook|icloud|peek/i.test(name)) {
+            out[name] = Services.prefs.getPrefType(name) === Services.prefs.PREF_BOOL
+              ? Services.prefs.getBoolPref(name)
+              : Services.prefs.getPrefType(name) === Services.prefs.PREF_INT
+                ? Services.prefs.getIntPref(name)
+                : Services.prefs.getStringPref(name, "?");
+          }
+        }
+        return out;
+      });
+      e.tabs = safe(() => [...gBrowser.tabs].map(tabInfo));
+      return e;
+    }
+
+    function render() {
+      return lines.map(l =>
+        `[${stamp(l.t)}] ${l.tag}: ${l.m}${l.n > 1 ? ` (x${l.n})` : ""}`
+      ).join("\n");
+    }
+
+    function fullText() {
+      return [
+        "== Email Peek support report ==",
+        `generated ${new Date().toISOString()}`,
+        "",
+        "-- environment --",
+        JSON.stringify(env(), null, 1),
+        "",
+        "-- how to read this report --",
+        "A provider response with HTTP 200 and the expected format is a successful fetch; zero entries means no unread messages, not an error.",
+        "Tab-detection summaries count pinned mail tabs matched by this provider. Other pinned tabs are unrelated and are intentionally omitted.",
+        "For failures, follow hover/popup events through request/response and render; non-null error fields or explicit failure entries are the strongest signals.",
+        "providersLoaded lists scripts that initialized here. Sine/autoconfig and OS-version fields are best-effort environment hints; a missing value alone does not mean a provider failed.",
+        "",
+        "-- log --",
+        render() || "(empty)",
+        "",
+        `contact: ${CONTACT.email} · ${CONTACT.github} · ${CONTACT.site}`,
+      ].join("\n");
+    }
+
+    function emailHref() {
+      const body = [
+        "[Paste the Email Peek support report here — it is copied when this link opens.]",
+        "",
+        "Explain the issue — attaching screenshots is recommended:",
+        "",
+      ].join("\n");
+      return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(CONTACT.email)}&su=${encodeURIComponent(`Email Peek support report v${VERSION}`)}&body=${encodeURIComponent(body)}`;
+    }
+
+    function html() {
+      const envJson = esc(JSON.stringify(env(), null, 1));
+      const logTxt = esc(render() || "(empty)");
+      const reportTxt = esc(fullText());
+      return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Email Peek</title>
+<style>
+  :root{color-scheme:dark;font:15px/1.6 system-ui,-apple-system,sans-serif;background:#111318;color:#eff0f4}
+  *{box-sizing:border-box} body{margin:0;padding:clamp(20px,5vw,56px) 20px 64px}
+  main{max-width:820px;margin:auto} a{color:inherit} .eyebrow{color:#a9b8d6;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+  h1{font-size:clamp(34px,6vw,52px);letter-spacing:-.045em;line-height:1.08;margin:10px 0} h2{font-size:20px;letter-spacing:-.02em;margin:0 0 8px}
+  p{color:#c4c8d2;margin:8px 0}.version{font-size:14px;font-weight:500;letter-spacing:0;color:#a9b8d6;vertical-align:middle}
+  .intro{max-width:650px;font-size:17px;color:#c4c8d2}.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:26px 0 34px}
+  .link{background:#1b202b;border:1px solid #303746;border-radius:12px;padding:17px 18px;text-decoration:none;transition:border-color .15s,transform .15s}
+  .link:hover{border-color:#8297bd;transform:translateY(-1px)}.link strong{display:block;font-size:16px}.link span{display:block;color:#aeb5c4;font-size:13px;margin-top:2px}
+  .support{border-top:1px solid #30343e;padding-top:28px;margin-top:18px}.actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0 10px}
+  .button{appearance:none;border:1px solid #3b465a;border-radius:8px;background:#252d3a;color:#f5f7fb;padding:10px 15px;font:600 14px system-ui;text-decoration:none;cursor:pointer}
+  .button.primary{background:#315fae;border-color:#4777c7}.button:hover{filter:brightness(1.12)}#msg{align-self:center;color:#b9c9e4;font-size:13px}
+  details{border-top:1px solid #30343e;padding:16px 0}summary{cursor:pointer;font-weight:650}details p{font-size:14px}
+  pre{background:#0b0d11;border:1px solid #272b34;border-radius:9px;padding:15px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,SFMono-Regular,monospace;color:#d8deea}
+  .note{font-size:13px;color:#aeb5c4}.report-copy{position:fixed;left:-10000px;top:0;width:1px;height:1px;opacity:0}
+</style></head><body><main>
+<div class="eyebrow">A Zen browser mod</div>
+<h1>Email Peek <span class="version">v${VERSION}</span></h1>
+<section aria-label="Links">
+<div class="links">
+  <a class="link" href="${esc(CONTACT.github)}" target="_blank" rel="noopener"><strong>GitHub ↗</strong><span>Source, releases, and issue tracking</span></a>
+  <a class="link" href="${esc(CONTACT.site)}" target="_blank" rel="noopener"><strong>malachyf.com ↗</strong><span>More from the developer</span></a>
+</div></section>
+<section class="support" aria-labelledby="support-title"><h2 id="support-title">Something not working?</h2>
+<p>Open a prefilled Gmail draft in Zen and the report is copied automatically.</p>
+<div class="actions">
+  <a class="button primary" id="email" href="${esc(emailHref())}" target="_blank" rel="noopener">Email a support report</a>
+  <button class="button" id="copy" type="button">Copy report</button><span id="msg" role="status" aria-live="polite"></span>
+</div>
+<p class="note">The report includes app details, preferences, open tab URLs, and diagnostic events. Review it before sharing.</p>
+</section>
+<details><summary>Environment snapshot</summary><pre>${envJson}</pre></details>
+<details><summary>Diagnostic log</summary><p>Read the log in sequence: tab detection → hover → popup/fetch → response → render. Repeated identical events may be collapsed as <code>(xN)</code>.</p><pre>${logTxt}</pre></details>
+<textarea class="report-copy" id="report-copy" aria-hidden="true" tabindex="-1">${reportTxt}</textarea>
+<script>
+const field = document.getElementById("report-copy");
+const msg = document.getElementById("msg");
+function copyReport(sent) {
+  field.focus(); field.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch {}
+  msg.textContent = copied
+    ? (sent ? "Report copied. Paste it into the draft." : "Full report copied. Review it before sharing.")
+    : "Copy was blocked. Open the Environment and Diagnostic log sections to select text manually.";
+  field.setSelectionRange(0, 0); field.blur();
+}
+document.getElementById("copy").addEventListener("click", () => copyReport(false));
+document.getElementById("email").addEventListener("click", () => copyReport(true));
+<\/script></main></body></html>`;
+    }
+
+    function writePageFile() {
+      const path =
+        safe(() => PathUtils.join(PathUtils.profileDir, "email-peek-diag.html")) ||
+        safe(() => ChromeUtils.importESModule("resource://gre/modules/PathUtils.sys.mjs")
+          .PathUtils.join(
+            ChromeUtils.importESModule("resource://gre/modules/PathUtils.sys.mjs").PathUtils.profileDir,
+            "email-peek-diag.html"
+          ));
+      if (!path) throw new Error("profile path unavailable");
+      const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+      file.initWithPath(path);
+      const fos = Cc["@mozilla.org/network/file-output-stream;1"]
+        .createInstance(Ci.nsIFileOutputStream);
+      fos.init(file, 0x02 | 0x08 | 0x20, 0o644, 0);
+      const cos = Cc["@mozilla.org/intl/converter-output-stream;1"]
+        .createInstance(Ci.nsIConverterOutputStream);
+      cos.init(fos, "UTF-8");
+      cos.writeString(html());
+      cos.close(); fos.close();
+      return file;
+    }
+
+    function open() {
+      log("diag", "open requested");
+      // Primary: a data: URL — it renders immediately in Zen with no disk I/O.
+      try {
+        const page = "data:text/html;charset=utf-8," + encodeURIComponent(html());
+        const tab = gBrowser.addTab(page, {
+          triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+        });
+        gBrowser.selectedTab = tab;
+        log("diag", "opened diagnostics data: tab");
+        return;
+      } catch (e) { log("diag", "data open path failed", String(e)); }
+      // Fallback: write a file and open it.
+      try {
+        const file = writePageFile();
+        const uri = Cc["@mozilla.org/network/io-service;1"]
+          .getService(Ci.nsIIOService).newFileURI(file).spec;
+        openWebLinkIn(uri, "tab");
+        log("diag", "opened diagnostics file:// tab");
+      } catch (e) { log("diag", "open failed", String(e)); }
+    }
+
+    function copy() {
+      try {
+        Cc["@mozilla.org/widget/clipboardhelper;1"]
+          .getService(Ci.nsIClipboardHelper)
+          .copyString(fullText());
+        log("diag", "logs copied to clipboard");
+        return true;
+      } catch (e) { log("diag", "clipboard copy failed", String(e)); return false; }
+    }
+
+    function writeFile() {
+      try {
+        const FU =
+          safe(() => FileUtils) ||
+          ChromeUtils.importESModule("resource://gre/modules/FileUtils.sys.mjs").FileUtils;
+        const file = FU.getFile("ProfD", ["email-peek.log"]);
+        const fos = Cc["@mozilla.org/network/file-output-stream;1"]
+          .createInstance(Ci.nsIFileOutputStream);
+        fos.init(file, 0x02 | 0x08 | 0x20, 0o644, 0); // write|create|truncate
+        const cos = Cc["@mozilla.org/intl/converter-output-stream;1"]
+          .createInstance(Ci.nsIConverterOutputStream);
+        cos.init(fos, "UTF-8");
+        cos.writeString(fullText());
+        cos.close(); fos.close();
+        return true;
+      } catch { return false; }
+    }
+
+    async function flush() {
+      if (!dirty) return;
+      dirty = false;
+      const text = fullText();
+      const path = safe(() => PathUtils.join(PathUtils.profileDir, "email-peek.log"));
+      for (const attempt of [
+        // Bare globals — the proven pattern the actor writer already uses.
+        () => IOUtils.writeUTF8(path, text),
+        async () => {
+          const { IOUtils: IO } = ChromeUtils.importESModule("resource://gre/modules/IOUtils.sys.mjs");
+          const { PathUtils: PU } = ChromeUtils.importESModule("resource://gre/modules/PathUtils.sys.mjs");
+          await IO.writeUTF8(PU.join(PU.profileDir, "email-peek.log"), text);
+        },
+      ]) {
+        try { await attempt(); return; } catch {}
+      }
+      if (!writeFile()) {
+        try { console.warn("[email-peek] diagnostics flush failed"); } catch {}
+      }
+    }
+
+    function ensureUI() {
+      if (uiDone) return;
+      uiDone = true;
+      // Tools menu item — out of the way, always in the menubar.
+      try {
+        const popup =
+          document.getElementById("menu_ToolsPopup") ||
+          document.querySelector("#menu_ToolsMenu menupopup") ||
+          document.getElementById("tools-menu");
+        if (popup) {
+          const item = document.createXULElement("menuitem");
+          item.id = "emailpeek-diag-item";
+          item.setAttribute("label", "About Email Peek");
+          item.addEventListener("command", () => open());
+          popup.appendChild(item);
+        }
+      } catch {}
+    }
+
+    return {
+      VERSION, CONTACT, log, open, copy, render, fullText, env, flush, tabInfo, html,
+      boot(provider) {
+        if (loaded[provider]) return;
+        loaded[provider] = VERSION;
+        if (!envLogged) {
+          envLogged = true;
+          log("env", "environment", env());
+        }
+        log("boot", `${provider} initialized`, { v: VERSION });
+        safe(() => ensureUI());
+        // Flush at boot too — don't wait for the 3s timer — so a crash or
+        // early unload can't lose the startup snapshot.
+        try { flush(); } catch {}
+        if (!hooked) {
+          hooked = true;
+          safe(() => {
+            window.addEventListener("error", ev => {
+              if (/peek/i.test(String(ev.filename || ""))) {
+                log("error", `${ev.message} @ ${String(ev.filename).split("/").pop()}:${ev.lineno}`);
+              }
+            }, true);
+            window.addEventListener("unhandledrejection", ev => {
+              const s = String(ev.reason?.stack || ev.reason || "");
+              if (/peek/i.test(s)) log("error", "unhandled rejection", clip(s));
+            });
+            window.addEventListener("unload", () => writeFile(), { once: true });
+          });
+        }
+      },
+    };
+  })());
+
 
   const pref = (name, fallback) => {
     try {
@@ -283,6 +614,7 @@
     }
 
     init() {
+      EPDiag.boot("gmail-peek");
       const style = el("style");
       style.textContent = CSS;
       (document.head || document.documentElement).appendChild(style);
@@ -318,9 +650,11 @@
 
       this.scanTabs();
       this.refreshBadge();
+      EPDiag.log("boot", "gmail-peek init complete", { claimed: this.gmailTabs.size });
     }
 
     destroy() {
+      EPDiag.log("boot", "gmail-peek destroyed");
       clearInterval(this.badgeInterval);
       clearInterval(this.dotsTimer);
       clearTimeout(this.hoverTimer);
@@ -383,8 +717,21 @@
     }
 
     scanTabs() {
+      let scanned = 0, claimed = 0;
+      this.scanMisses ||= new WeakSet();
       for (const tab of gBrowser.tabs) {
-        if (!this.isGmailTab(tab)) continue;
+        scanned++;
+        if (!this.isGmailTab(tab)) {
+          const info = EPDiag.tabInfo(tab);
+          const candidate = /mail\.google\.com/i.test(info.url);
+          if ((tab.pinned || tab.hasAttribute("zen-essential")) && candidate && !this.scanMisses.has(tab)) {
+            EPDiag.log("scan", "pinned provider URL not matched", { provider: "Gmail", tab: info });
+            this.scanMisses.add(tab);
+          } else if (!candidate) this.scanMisses.delete(tab);
+          continue;
+        }
+        this.scanMisses.delete(tab);
+        claimed++;
         this.gmailTabs.add(tab);
         if (!this.boundTabs.has(tab)) {
           this.boundTabs.add(tab);
@@ -392,6 +739,10 @@
           tab.addEventListener("mouseenter", this.onHoverIn, false);
           tab.addEventListener("mouseleave", this.onHoverOut, false);
         }
+      }
+      if (this.lastScanClaimed !== claimed) {
+        this.lastScanClaimed = claimed;
+        EPDiag.log("scan", "provider tab detection", { provider: "Gmail", scanned, matched: claimed });
       }
     }
 
@@ -403,7 +754,22 @@
 
     onHoverIn(e) {
       const tab = asTab(e.target) || asTab(e.currentTarget);
-      if (!tab) return;
+      if (!tab) {
+        // Pointer over something tab-like that asTab can't resolve means the
+        // markup changed under us — that's the "only a native tooltip shows"
+        // failure users reported.
+        const near = e.target?.closest?.(
+          ".zen-essentials-container, tab, tabbrowser-tab, .tabbrowser-tab"
+        );
+        if (near) {
+          EPDiag.log("hover", "unresolved hover target", {
+            localName: e.target?.localName,
+            cls: String(e.target?.className?.baseVal ?? e.target?.className ?? "").slice(0, 80),
+            near: near.localName,
+          });
+        }
+        return;
+      }
       if (!this.isGmailTab(tab)) return;
       if (this.hoverTab === tab) return;
       this.enterTab(tab);
@@ -422,16 +788,24 @@
       this.stripTooltip(tab);
       this.suppressTooltip = true;
       clearTimeout(this.hoverTimer);
+      EPDiag.log("hover", "enter", EPDiag.tabInfo(tab));
       this.hoverTimer = setTimeout(() => {
-        this.show(tab).catch(err =>
-          console.warn(TAG, "show failed:", err)
-        );
+        this.show(tab).catch(err => {
+          EPDiag.log("popup", "show failed", String(err?.message || err));
+          console.warn(TAG, "show failed:", err);
+        });
       }, iPref("mod.gmailpeek.hover_delay", 400));
     }
 
     leaveTab() {
       clearTimeout(this.hoverTimer);
-      if (this.hoverTab) this.restoreTooltip(this.hoverTab);
+      if (this.hoverTab) {
+        EPDiag.log("hover", "leave", {
+          panelState: this.panel?.state,
+          tab: EPDiag.tabInfo(this.hoverTab),
+        });
+        this.restoreTooltip(this.hoverTab);
+      }
       this.hoverTab = null;
       this.suppressTooltip = false;
       if (this.panel && this.panel.state !== "closed") this.scheduleHide();
@@ -499,21 +873,52 @@
 
     async fetchFeed(acct, tab) {
       const init = this.jarInitFor(tab);
-      const res = await fetch(feedUrl(acct), init);
+      const url = feedUrl(acct);
+      const t0 = Date.now();
+      EPDiag.log("feed", "request", {
+        acct, url, ucid: init._ucid, jar: !!init.cookieJarSettings,
+        tp: !!init.triggeringPrincipal,
+      });
+      let res;
+      try {
+        res = await fetch(url, init);
+      } catch (e) {
+        EPDiag.log("feed", "request threw", { acct, ms: Date.now() - t0, err: String(e) });
+        throw e;
+      }
+      const ms = Date.now() - t0;
+      const meta = {
+        acct, status: res.status, ms,
+        finalUrl: res.url !== url ? res.url.slice(0, 140) : undefined,
+        ct: res.headers?.get?.("content-type") || undefined,
+      };
       if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
+        EPDiag.log("feed", "redirected to login", meta);
         throw new Error("signed-out");
       }
       if (!res.ok) {
+        EPDiag.log("feed", "HTTP error", meta);
         throw new Error(
           `HTTP ${res.status}${init._ucid ? ` · ctx${init._ucid}` : ""}`
         );
       }
       const text = await res.text();
+      const head = text.slice(0, 500);
+      meta.len = text.length;
+      meta.sig = /<feed[\s>]/.test(head) ? "feed"
+        : /<html|<!doctype/i.test(head) ? "html"
+        : /^[\s<]*\?xml/.test(head) ? "xml-other"
+        : "other";
       const doc = new DOMParser().parseFromString(text, "text/xml");
-      if (doc.getElementsByTagName("parsererror").length) {
+      const parserErr = doc.getElementsByTagName("parsererror").length;
+      if (parserErr) meta.parserError = true;
+      const countEl = doc.getElementsByTagNameNS("*", "fullcount")[0];
+      meta.fullcount = countEl?.textContent;
+      meta.entries = doc.getElementsByTagNameNS("*", "entry").length;
+      EPDiag.log("feed", "response", meta);
+      if (parserErr) {
         throw new Error("signed-out");
       }
-      const countEl = doc.getElementsByTagNameNS("*", "fullcount")[0];
       const entries = [...doc.getElementsByTagNameNS("*", "entry")].map(e => ({
         title:
           e.getElementsByTagNameNS("*", "title")[0]?.textContent?.trim() ||
@@ -539,8 +944,10 @@
         this.caches.set(acct, cache);
       }
       if (!force && Date.now() - cache.t < 45000) {
+        EPDiag.log("feed", "cache hit", { acct, ageMs: Date.now() - cache.t, hasData: !!cache.data, err: cache.error });
         return Promise.resolve(cache);
       }
+      EPDiag.log("feed", "get", { acct, force });
       if (!this.inflights.has(acct)) {
         this.inflights.set(
           acct,
@@ -550,6 +957,7 @@
               this.caches.set(acct, { t, refreshedAt: t, data, error: null });
             })
             .catch(err => {
+              EPDiag.log("feed", "cache error", { acct, err: String(err?.message || err) });
               this.caches.set(acct, {
                 t: Date.now(),
                 refreshedAt: cache.refreshedAt || (cache.data ? cache.t : 0),
@@ -593,6 +1001,7 @@
       this.ensurePanel();
       const acct = this.accountForTab(tab);
       const cached = this.caches.get(acct);
+      EPDiag.log("popup", "show", { acct, cached: !!cached?.data, err: cached?.error });
 
       // Show what we have immediately — only cold cache gets the loader.
       if (cached?.data || cached?.error) {
@@ -610,6 +1019,7 @@
         try {
           this.panel.openPopupAtScreen(x, y, false);
         } catch (err) {
+          EPDiag.log("popup", "openPopupAtScreen failed, trying anchor", String(err));
           console.warn(TAG, "openPopupAtScreen failed, trying anchor:", err);
           this.panel.openPopup(tab, "after_start", 4, 0, false, false);
         }
@@ -705,6 +1115,12 @@
       const box = this.box;
       box.replaceChildren();
       this.setRefreshing(this.refreshing);
+      EPDiag.log("render", "paint", {
+        acct,
+        entries: cache?.data?.entries?.length,
+        count: cache?.data?.count,
+        error: cache?.error,
+      });
       const max = iPref("mod.gmailpeek.max_items", 6);
       const multi = new Set(
         [...this.gmailTabs].map(t => this.accountForTab(t))
@@ -720,6 +1136,12 @@
         );
       }
       right.appendChild(this.refreshButton());
+      const diagBtn = el("div", "gp-refresh");
+      diagBtn.setAttribute("data-diag", "1");
+      diagBtn.setAttribute("role", "button");
+      diagBtn.setAttribute("aria-label", "About Email Peek");
+      diagBtn.textContent = "i";
+      right.appendChild(diagBtn);
       header.appendChild(right);
       box.appendChild(header);
 
@@ -815,6 +1237,11 @@
       const row = e.target.closest(".gp-row");
       const acct = this.accountForTab(tab);
       const refresh = e.target.closest("[data-refresh]");
+      const diag = e.target.closest("[data-diag]");
+      if (diag) {
+        EPDiag.open(diag);
+        return;
+      }
       if (refresh) {
         this.doRefresh();
         return;
@@ -832,6 +1259,7 @@
     }
 
     navigate(tab, url) {
+      EPDiag.log("nav", "open", { url: String(url).split("?")[0].slice(0, 120) });
       try {
         gBrowser.selectedTab = tab;
         tab.linkedBrowser.loadURI(url, {
@@ -869,6 +1297,7 @@
     }
 
     paintBadge(tab, count) {
+      EPDiag.log("badge", "paint", { count, tab: EPDiag.tabInfo(tab) });
       const host =
         tab.shadowRoot?.querySelector(".tab-icon-stack") ||
         tab.shadowRoot?.querySelector(".tab-content") ||
@@ -915,6 +1344,7 @@
     }
 
     onPanelHidden() {
+      EPDiag.log("popup", "hidden");
       this.refreshSequence++;
       this.refreshing = false;
       clearInterval(this.dotsTimer);
@@ -936,6 +1366,7 @@
       window.gmailPeek = new GmailPeek();
       window.gmailPeek.init();
     } catch (err) {
+      EPDiag.log("boot", "gmail-peek boot failed", String(err?.stack || err));
       console.error(TAG, "boot failed:", err);
     }
   };
