@@ -39,8 +39,7 @@ through the session you're already signed in with.
 
 The Gmail half, pictured up top. Hover your pinned Gmail tab and your unread
 mail appears — sender, subject, a snippet, and how long ago it arrived.
-Works with Gmail signed in across the default context or inside
-**Firefox/Zen Multi-Account Containers** (Work, Personal, etc.).
+Requires Gmail signed in **in the default (non-container) context**.
 
 ## + Proton Peek
 

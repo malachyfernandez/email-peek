@@ -83,7 +83,7 @@ for (const [name, Peek, prefix, get, load] of [
     peek.box = uiNode();
     peek.panel = { state: "open" };
     peek.paintBadge = () => {};
-    return { peek, tab, key: name === "Gmail" ? "0@0" : tab };
+    return { peek, tab, key: name === "Gmail" ? "0" : tab };
   }
 
   test(`${name} refreshes on every opening, even inside the cache TTL`, async () => {
@@ -752,25 +752,12 @@ test("Gmail fetch falls back to the default jar for plain tabs", () => {
   assert.ok(!stray.triggeringPrincipal);
 });
 
-test("Gmail cache keys isolate accounts and containers", () => {
-  const peek = new GmailPeek();
-  const attrTab = {
-    getAttribute: a => (a === "usercontextid" ? "3" : null),
-  };
-  assert.equal(peek.containerForTab({ userContextId: 2 }), 2);
-  assert.equal(peek.containerForTab(attrTab), 3);
-  assert.equal(peek.containerForTab({}), 0);
-  assert.equal(peek.containerForTab(null), 0);
-  assert.equal(peek.cacheKeyForTab({ userContextId: 2 }), "0@2");
-  assert.equal(peek.cacheKeyForTab({}), "0@0");
-});
-
 test("Gmail 401 annotates the container context in the error", async () => {
   const peek = new GmailPeek();
   gmailContext.fetch = async () => ({ url: "https://mail.google.com/mail/u/0/feed/atom", ok: false, status: 401 });
   const cjs = { originAttributes: { userContextId: 3 } };
   await assert.rejects(
-    peek.fetchFeed("0", 0, {
+    peek.fetchFeed("0", {
       linkedBrowser: {
         browsingContext: { cookieJarSettings: cjs },
         contentPrincipal: { asciiHost: "mail.google.com" },
@@ -778,7 +765,7 @@ test("Gmail 401 annotates the container context in the error", async () => {
     }),
     /HTTP 401 · ctx3/
   );
-  await assert.rejects(peek.fetchFeed("0", 0, null), /HTTP 401$/);
+  await assert.rejects(peek.fetchFeed("0", null), /HTTP 401$/);
 });
 
 test("diagnostics singleton dedupes repeats and renders the log", () => {
