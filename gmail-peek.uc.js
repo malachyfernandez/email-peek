@@ -386,6 +386,21 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
   const composeUrl = acct =>
     `https://mail.google.com/mail/u/${encodeURIComponent(acct)}/#inbox?compose=new`;
 
+  // ContextualIdentityService isn't always a window global in the chrome
+  // context — fall back to the module so container lookups are reliable.
+  const cis = () => {
+    try {
+      return (
+        window.ContextualIdentityService ||
+        ChromeUtils.importESModule(
+          "resource://gre/modules/ContextualIdentityService.sys.mjs"
+        ).ContextualIdentityService
+      );
+    } catch {
+      return null;
+    }
+  };
+
   const el = (tag, cls, text) => {
     const node = document.createElementNS(XHTML, tag);
     if (cls) node.className = cls;
@@ -711,6 +726,48 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       return defaultAccount();
     }
 
+    // Which Multi-Account Container (userContextId) a tab lives in.
+    // 0 = default context. Property and attribute are authoritative; the
+    // Zen-workspace and container-name checks are last-resort heuristics.
+    containerForTab(tab) {
+      if (!tab) return 0;
+      if (tab.userContextId !== undefined && tab.userContextId !== null) {
+        const id = parseInt(tab.userContextId, 10);
+        if (!isNaN(id) && id > 0) return id;
+      }
+      const attr = tab.getAttribute?.("usercontextid") || tab.linkedBrowser?.getAttribute?.("usercontextid");
+      if (attr) {
+        const id = parseInt(attr, 10);
+        if (!isNaN(id) && id > 0) return id;
+      }
+      try {
+        const wsId = tab.getAttribute?.("zen-workspace-id") || window.gZenWorkspaces?.activeWorkspace;
+        if (wsId && window.gZenWorkspaces) {
+          const ws = window.gZenWorkspaces.getWorkspaceFromId(wsId);
+          if (ws?.containerTabId) {
+            return parseInt(ws.containerTabId, 10);
+          }
+        }
+      } catch {}
+      try {
+        const tooltip = tab.getAttribute?.("tooltiptext") || tab.getAttribute?.("label") || "";
+        const cisSvc = cis();
+        if (cisSvc) {
+          for (const ident of cisSvc.getPublicIdentities()) {
+            if (ident.name && (tooltip.endsWith(ident.name) || tooltip.includes(`(${ident.name})`) || tooltip.includes(` ${ident.name}`))) {
+              return ident.userContextId;
+            }
+          }
+        }
+      } catch {}
+      return 0;
+    }
+
+    // Cache/badge key: account@container so separate inboxes never collide.
+    cacheKeyForTab(tab) {
+      return `${this.accountForTab(tab)}@${this.containerForTab(tab)}`;
+    }
+
     isGmailTab(tab) {
       if (!tab) return false;
       const pinnedLike =
@@ -857,12 +914,12 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
 
     // ---------- feed ----------
 
-    // The mod fetches from the chrome context, whose cookie jar is the
-    // DEFAULT one — a Gmail session that lives inside a container tab or a
-    // private window is invisible to it and the feed 401s. Pass the tab's
-    // own cookieJarSettings (and, when the tab is a live google page, its
-    // principal so SameSite=Lax cookies attach) so the request rides the
-    // same jar the tab uses.
+    // The mod fetches from the chrome context. For the default context the
+    // request rides the tab's own cookieJarSettings (and, when the tab is a
+    // live google page, its principal so SameSite=Lax cookies attach). A
+    // Gmail session inside a Multi-Account Container lives in that
+    // container's jar instead, which fetch() can't reach — those go through
+    // fetchContainerText below (no OAuth or third-party API needed).
     jarInitFor(tab) {
       const init = { credentials: "include", cache: "no-cache" };
       try {
@@ -882,38 +939,112 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       return init;
     }
 
-    async fetchFeed(acct, tab) {
-      const init = this.jarInitFor(tab);
+    // Container-jar fetch: a channel whose loading principal carries
+    // { userContextId } reads that container's cookie jar, which fetch()
+    // can't reach from the chrome context.
+    fetchContainerText(url, containerId, meta, t0) {
+      return new Promise((resolve, reject) => {
+        try {
+          const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
+          const uri = Services.io.newURI(url);
+          const principal = Services.scriptSecurityManager.createContentPrincipal(
+            uri,
+            { userContextId: containerId }
+          );
+          const channel = NetUtil.newChannel({
+            uri,
+            contentPolicyType: Ci.nsIContentPolicy.TYPE_SAVEAS_DOWNLOAD,
+            loadingPrincipal: principal,
+            securityFlags:
+              Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL |
+              Ci.nsILoadInfo.SEC_COOKIES_INCLUDE,
+            triggeringPrincipal: principal,
+          }).QueryInterface(Ci.nsIHttpChannel);
+
+          channel.setRequestHeader("Cache-Control", "no-cache", false);
+
+          NetUtil.asyncFetch(channel, (inputStream, status, request) => {
+            meta.ms = Date.now() - t0;
+            if (!Components.isSuccessCode(status)) {
+              EPDiag.log("feed", "request threw", { ...meta, err: `nsresult ${status}` });
+              reject(new Error(`Network error (${status})`));
+              return;
+            }
+            try {
+              const http = request.QueryInterface(Ci.nsIHttpChannel);
+              meta.status = http.responseStatus;
+              try {
+                meta.ct = http.getResponseHeader("Content-Type");
+              } catch {}
+              if (http.URI?.spec && http.URI.spec !== url) {
+                meta.finalUrl = http.URI.spec.slice(0, 140);
+              }
+              if (http.responseStatus === 401 || http.responseStatus === 403) {
+                EPDiag.log("feed", "HTTP error", meta);
+                reject(new Error("signed-out"));
+                return;
+              }
+              if (http.responseStatus >= 400) {
+                EPDiag.log("feed", "HTTP error", meta);
+                reject(new Error(`HTTP ${http.responseStatus}`));
+                return;
+              }
+              const data = NetUtil.readInputStreamToString(inputStream, inputStream.available(), { charset: "utf-8" });
+              resolve(data);
+            } catch (e) {
+              reject(e);
+            }
+          });
+        } catch (err) {
+          EPDiag.log("feed", "request threw", { ...meta, err: String(err) });
+          reject(err);
+        }
+      });
+    }
+
+    async fetchFeed(acct, containerId = 0, tab = null) {
       const url = feedUrl(acct);
       const t0 = Date.now();
-      EPDiag.log("feed", "request", {
-        acct, url, ucid: init._ucid, jar: !!init.cookieJarSettings,
-        tp: !!init.triggeringPrincipal,
-      });
-      let res;
-      try {
-        res = await fetch(url, init);
-      } catch (e) {
-        EPDiag.log("feed", "request threw", { acct, ms: Date.now() - t0, err: String(e) });
-        throw e;
+      const meta = { acct, ctx: containerId };
+      let text;
+      if (containerId > 0) {
+        EPDiag.log("feed", "request", { acct, url, ctx: containerId, via: "xpcom" });
+        text = await this.fetchContainerText(url, containerId, meta, t0);
+      } else {
+        const init = this.jarInitFor(tab);
+        meta.ucid = init._ucid;
+        meta.jar = !!init.cookieJarSettings;
+        meta.tp = !!init.triggeringPrincipal;
+        EPDiag.log("feed", "request", {
+          acct, url, ucid: init._ucid, jar: meta.jar, tp: meta.tp,
+        });
+        let res;
+        try {
+          res = await fetch(url, init);
+        } catch (e) {
+          EPDiag.log("feed", "request threw", { acct, ms: Date.now() - t0, err: String(e) });
+          throw e;
+        }
+        meta.status = res.status;
+        meta.ms = Date.now() - t0;
+        meta.finalUrl = res.url !== url ? res.url.slice(0, 140) : undefined;
+        meta.ct = res.headers?.get?.("content-type") || undefined;
+        if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
+          EPDiag.log("feed", "redirected to login", meta);
+          throw new Error("signed-out");
+        }
+        if (!res.ok) {
+          EPDiag.log("feed", "HTTP error", meta);
+          throw new Error(
+            `HTTP ${res.status}${init._ucid ? ` · ctx${init._ucid}` : ""}`
+          );
+        }
+        text = await res.text();
       }
-      const ms = Date.now() - t0;
-      const meta = {
-        acct, status: res.status, ms,
-        finalUrl: res.url !== url ? res.url.slice(0, 140) : undefined,
-        ct: res.headers?.get?.("content-type") || undefined,
-      };
-      if (/ServiceLogin|accounts\.google\.com/.test(res.url)) {
-        EPDiag.log("feed", "redirected to login", meta);
+      if (/ServiceLogin|accounts\.google\.com/.test(text)) {
+        EPDiag.log("feed", "login page in body", meta);
         throw new Error("signed-out");
       }
-      if (!res.ok) {
-        EPDiag.log("feed", "HTTP error", meta);
-        throw new Error(
-          `HTTP ${res.status}${init._ucid ? ` · ctx${init._ucid}` : ""}`
-        );
-      }
-      const text = await res.text();
       const head = text.slice(0, 500);
       meta.len = text.length;
       meta.sig = /<feed[\s>]/.test(head) ? "feed"
@@ -948,41 +1079,42 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       return { count, entries };
     }
 
-    getFeed(acct, force = false, tab = null) {
-      let cache = this.caches.get(acct);
+    getFeed(acct, containerId = 0, force = false, tab = null) {
+      const key = `${acct}@${containerId}`;
+      let cache = this.caches.get(key);
       if (!cache) {
         cache = { t: 0, data: null, error: null };
-        this.caches.set(acct, cache);
+        this.caches.set(key, cache);
       }
       if (!force && Date.now() - cache.t < 45000) {
-        EPDiag.log("feed", "cache hit", { acct, ageMs: Date.now() - cache.t, hasData: !!cache.data, err: cache.error });
+        EPDiag.log("feed", "cache hit", { key, ageMs: Date.now() - cache.t, hasData: !!cache.data, err: cache.error });
         return Promise.resolve(cache);
       }
-      EPDiag.log("feed", "get", { acct, force });
-      if (!this.inflights.has(acct)) {
+      EPDiag.log("feed", "get", { acct, ctx: containerId, force });
+      if (!this.inflights.has(key)) {
         this.inflights.set(
-          acct,
-          this.fetchFeed(acct, tab)
+          key,
+          this.fetchFeed(acct, containerId, tab)
             .then(data => {
               const t = Date.now();
-              this.caches.set(acct, { t, refreshedAt: t, data, error: null });
+              this.caches.set(key, { t, refreshedAt: t, data, error: null });
             })
             .catch(err => {
-              EPDiag.log("feed", "cache error", { acct, err: String(err?.message || err) });
-              this.caches.set(acct, {
+              EPDiag.log("feed", "cache error", { key, err: String(err?.message || err) });
+              this.caches.set(key, {
                 t: Date.now(),
                 refreshedAt: cache.refreshedAt || (cache.data ? cache.t : 0),
                 data: null,
                 error: String(err?.message || err),
               });
             })
-            .then(() => this.caches.get(acct))
+            .then(() => this.caches.get(key))
             .finally(() => {
-              this.inflights.delete(acct);
+              this.inflights.delete(key);
             })
         );
       }
-      return this.inflights.get(acct);
+      return this.inflights.get(key);
     }
 
     // ---------- panel ----------
@@ -1011,12 +1143,13 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
     async show(tab) {
       this.ensurePanel();
       const acct = this.accountForTab(tab);
-      const cached = this.caches.get(acct);
-      EPDiag.log("popup", "show", { acct, cached: !!cached?.data, err: cached?.error });
+      const key = this.cacheKeyForTab(tab);
+      const cached = this.caches.get(key);
+      EPDiag.log("popup", "show", { acct, key, cached: !!cached?.data, err: cached?.error });
 
       // Show what we have immediately — only cold cache gets the loader.
       if (cached?.data || cached?.error) {
-        this.render(cached, acct);
+        this.render(cached, acct, tab);
       } else {
         this.renderLoading();
       }
@@ -1098,7 +1231,8 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       }
       clearInterval(this.dotsTimer);
       this.dotsTimer = null;
-      const cache = this.currentTab && this.caches.get(this.accountForTab(this.currentTab));
+      const key = this.currentTab ? this.cacheKeyForTab(this.currentTab) : "0@0";
+      const cache = this.currentTab && this.caches.get(key);
       const refreshedAt = cache?.refreshedAt || (cache?.data && cache.t);
       const stamp = refreshedAt ? `Refreshed ${new Date(refreshedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "";
       if (on) {
@@ -1122,23 +1256,38 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       this.box.replaceChildren(el("div", "gp-status", "Loading inbox…"));
     }
 
-    render(cache, acct) {
+    render(cache, acct, tab) {
       const box = this.box;
       box.replaceChildren();
       this.setRefreshing(this.refreshing);
+      const containerId = tab ? this.containerForTab(tab) : 0;
       EPDiag.log("render", "paint", {
         acct,
+        ctx: containerId,
         entries: cache?.data?.entries?.length,
         count: cache?.data?.count,
         error: cache?.error,
       });
       const max = iPref("mod.gmailpeek.max_items", 6);
+      let identityName = "";
+      if (containerId > 0) {
+        try {
+          const id = cis()?.getPublicIdentityFromId(containerId);
+          if (id?.name) identityName = id.name;
+        } catch {}
+      }
       const multi = new Set(
-        [...this.gmailTabs].map(t => this.accountForTab(t))
+        [...this.gmailTabs].map(t => this.cacheKeyForTab(t))
       ).size > 1;
 
       const header = el("div", "gp-header");
-      header.appendChild(el("span", null, multi ? `Inbox · u/${acct}` : "Inbox"));
+      let headerTitle = "Inbox";
+      if (identityName) {
+        headerTitle = `Inbox · ${identityName}`;
+      } else if (multi) {
+        headerTitle = `Inbox · u/${acct}`;
+      }
+      header.appendChild(el("span", null, headerTitle));
       const right = el("div", "gp-header-right");
       if (cache.data) {
         right.appendChild(
@@ -1221,12 +1370,13 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       if (!tab) return;
       const sequence = ++this.refreshSequence;
       const acct = this.accountForTab(tab);
+      const containerId = this.containerForTab(tab);
       this.setRefreshing(true);
       try {
-        const cache = await this.getFeed(acct, true, tab);
+        const cache = await this.getFeed(acct, containerId, true, tab);
         if (sequence !== this.refreshSequence || this.currentTab !== tab || this.panel.state === "closed") return;
         if (cache.data) this.paintBadge(tab, cache.data.count);
-        this.render(cache, acct);
+        this.render(cache, acct, tab);
       } finally {
         if (sequence === this.refreshSequence && this.currentTab === tab && this.panel.state !== "closed") {
           this.setRefreshing(false);
@@ -1291,15 +1441,21 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       this.scanTabs();
       const tabs = this.findGmailTabs();
       if (!tabs.length || !bPref("mod.gmailpeek.show_badge", true)) return;
-      // Group tabs by account — one fetch per unique /u/N/.
-      const byAccount = new Map();
+      // Group tabs by account + container — one fetch per unique pair.
+      const byKey = new Map();
       for (const tab of tabs) {
-        const acct = this.accountForTab(tab);
-        if (!byAccount.has(acct)) byAccount.set(acct, []);
-        byAccount.get(acct).push(tab);
+        const key = this.cacheKeyForTab(tab);
+        if (!byKey.has(key)) {
+          byKey.set(key, {
+            acct: this.accountForTab(tab),
+            containerId: this.containerForTab(tab),
+            tabs: [],
+          });
+        }
+        byKey.get(key).tabs.push(tab);
       }
-      for (const [acct, acctTabs] of byAccount) {
-        const cache = await this.getFeed(acct, false, acctTabs[0]);
+      for (const { acct, containerId, tabs: acctTabs } of byKey.values()) {
+        const cache = await this.getFeed(acct, containerId, false, acctTabs[0]);
         if (cache.error || !cache.data) continue;
         for (const tab of acctTabs) {
           this.paintBadge(tab, cache.data.count);
