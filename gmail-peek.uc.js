@@ -666,9 +666,15 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       this.observer.observe(root, {
         subtree: true,
         attributes: true,
-        attributeFilter: ["zen-essential", "pinned"],
+        attributeFilter: ["zen-essential", "pinned", "data-zen-url", "data-zen-pinned-url", "label", "title"],
         childList: true,
       });
+
+      try {
+        gBrowser.tabContainer?.addEventListener("TabAttrModified", () => this.scanTabs());
+        gBrowser.tabContainer?.addEventListener("TabPinned", () => this.scanTabs());
+        gBrowser.tabContainer?.addEventListener("TabUnpinned", () => this.scanTabs());
+      } catch {}
 
       window.addEventListener("unload", () => this.destroy(), { once: true });
 
@@ -710,12 +716,45 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       );
     }
 
+    // Resolve a tab's URL. Zen workspace tabs don't carry data-zen-url
+    // (only Essentials do) and hibernated/lazy tabs have a blank
+    // linkedBrowser.currentURI, so check several sources.
+    tabUrl(tab) {
+      if (!tab) return "";
+      let url = "";
+      try {
+        if (typeof window.gBrowser?.getTabURL === "function") {
+          url = window.gBrowser.getTabURL(tab);
+        }
+      } catch {}
+      if (url && typeof url === "string" && url !== "about:blank") return url;
+
+      const candidates = [
+        tab.getAttribute?.("data-zen-url"),
+        tab.getAttribute?.("data-zen-pinned-url"),
+        tab.getAttribute?.("zen-tab-url"),
+        tab.getAttribute?.("url"),
+        tab._zenPinnedInitialState?.entry?.url,
+        tab.linkedBrowser?.currentURI?.spec,
+        tab.linkedBrowser?.registeredOpenURI?.spec,
+        tab.linkedBrowser?.userTypedValue,
+      ];
+      for (const c of candidates) {
+        if (typeof c === "string" && c && c !== "about:blank") return c;
+      }
+      return "";
+    }
+
     // Which Gmail account (/u/N/) a tab belongs to. Falls back to the
     // mod.gmailpeek.account pref when the URL carries no index.
     accountForTab(tab) {
       const specs = [
+        this.tabUrl(tab),
         tab._zenPinnedInitialState?.entry?.url,
         tab.linkedBrowser?.currentURI?.spec,
+        tab.getAttribute?.("data-zen-url"),
+        tab.getAttribute?.("data-zen-pinned-url"),
+        tab.getAttribute?.("zen-tab-url"),
       ];
       for (const spec of specs) {
         const m = typeof spec === "string"
@@ -770,18 +809,39 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
 
     isGmailTab(tab) {
       if (!tab) return false;
+      const requirePinned = bPref("mod.gmailpeek.require_pinned", false);
       const pinnedLike =
         tab.pinned || tab.hasAttribute("zen-essential") || tab.hasAttribute("pinned");
-      if (!pinnedLike) return false;
-      const specs = [
-        tab._zenPinnedInitialState?.entry?.url,
-        tab.linkedBrowser?.currentURI?.spec,
-      ];
-      return specs.some(
-        spec =>
-          typeof spec === "string" &&
-          /^https?:\/\/mail\.google\.com\//.test(spec)
-      );
+      if (requirePinned && !pinnedLike) return false;
+
+      const url = this.tabUrl(tab);
+      if (url && /^https?:\/\/mail\.google\.com\//i.test(url)) {
+        return true;
+      }
+      // A resolved non-Gmail URL settles it — the label/tooltip/favicon
+      // fallbacks below only run when the URL can't be resolved at all
+      // (Zen workspace / hibernated lazy tabs), since they can match pages
+      // that merely mention Gmail.
+      if (url) return false;
+
+      const label = tab.getAttribute?.("label") || tab.label || "";
+      const tooltip =
+        tab.getAttribute?.("tooltiptext") ||
+        tab.getAttribute?.("title") ||
+        "";
+      if (
+        /@gmail\.com| - Gmail|\bGmail\b/i.test(label) ||
+        /@gmail\.com| - Gmail|\bGmail\b/i.test(tooltip)
+      ) {
+        return true;
+      }
+
+      const image = tab.getAttribute?.("image") || tab.image || "";
+      if (/mail\.google\.com|google\.com.*mail/i.test(image)) {
+        return true;
+      }
+
+      return false;
     }
 
     scanTabs() {
