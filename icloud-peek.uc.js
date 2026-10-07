@@ -1711,16 +1711,38 @@ export class ICloudPeekChild extends _PPBase {
       const x = sx + r.right + 6;
       const y = sy + r.top;
       if (this.panel.state === "closed") {
-        try {
-          this.panel.openPopupAtScreen(x, y, false);
-        } catch (err) {
-          console.warn(TAG, "openPopupAtScreen failed, trying anchor:", err);
-          this.panel.openPopup(tab, "after_start", 4, 0, false, false);
-        }
+        this.openPanel(tab, x, y);
       }
       this.holdCompactSidebar();
 
       await this.refresh(tab);
+    }
+
+    // Wayland exposes no usable global screen coordinates, so on Linux the
+    // panel anchors to the tab; other platforms keep the screen-positioned
+    // open the frame styling was tuned for. The other method is always the
+    // fallback if the primary throws.
+    openPanel(tab, x, y) {
+      const anchorFirst = Services.appinfo?.OS === "Linux";
+      try {
+        if (anchorFirst) {
+          this.panel.openPopup(tab, "after_start", 4, 0, false, false);
+        } else {
+          this.panel.openPopupAtScreen(x, y, false);
+        }
+      } catch (err) {
+        EPDiag.log("popup", "primary open failed, retrying", String(err));
+        try {
+          if (anchorFirst) {
+            this.panel.openPopupAtScreen(x, y, false);
+          } else {
+            this.panel.openPopup(tab, "after_start", 4, 0, false, false);
+          }
+        } catch (e2) {
+          EPDiag.log("popup", "open failed", String(e2));
+          console.warn(TAG, "openPopup failed:", e2);
+        }
+      }
     }
 
     // ---------- compact-mode sidebar hold ----------
