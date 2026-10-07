@@ -56,7 +56,7 @@
   // renders the whole report into a real browser tab — plain HTML, plain
   // links, no chrome APIs required at click time.
   const EPDiag = (window.__EPDiag ||= (() => {
-    const VERSION = "1.7.5";
+    const VERSION = "1.8.0";
     const CONTACT = {
       email: "malachyfernandez@gmail.com",
       github: "https://github.com/malachyfernandez/email-peek",
@@ -1712,10 +1712,13 @@ export class ICloudPeekChild extends _PPBase {
       const y = sy + r.top;
       if (this.panel.state === "closed") {
         try {
-          this.panel.openPopupAtScreen(x, y, false);
-        } catch (err) {
-          console.warn(TAG, "openPopupAtScreen failed, trying anchor:", err);
           this.panel.openPopup(tab, "after_start", 4, 0, false, false);
+        } catch (err) {
+          try {
+            this.panel.openPopupAtScreen(x, y, false);
+          } catch (e2) {
+            console.warn(TAG, "openPopup failed:", e2);
+          }
         }
       }
       this.holdCompactSidebar();
