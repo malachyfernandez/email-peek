@@ -29,7 +29,7 @@
   // renders the whole report into a real browser tab — plain HTML, plain
   // links, no chrome APIs required at click time.
   const EPDiag = (window.__EPDiag ||= (() => {
-    const VERSION = "1.8.0";
+    const VERSION = "1.8.1";
     const CONTACT = {
       email: "malachyfernandez@gmail.com",
       github: "https://github.com/malachyfernandez/email-peek",
@@ -829,15 +829,17 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
         tab.getAttribute?.("tooltiptext") ||
         tab.getAttribute?.("title") ||
         "";
-      if (
-        /@gmail\.com| - Gmail|\bGmail\b/i.test(label) ||
-        /@gmail\.com| - Gmail|\bGmail\b/i.test(tooltip)
-      ) {
+      // Gmail tab titles look like "Inbox (3) - user@gmail.com",
+      // "user@x.com - Gmail", or a bare "Gmail". A bare \bGmail\b would
+      // claim pages that merely mention Gmail ("Arc-style Gmail preview…").
+      const gmailTitle =
+        /gmail\.com|\bGmail\s*[-–:]|[-–]\s*Gmail\b|^\s*Gmail\s*$/i;
+      if (gmailTitle.test(label) || gmailTitle.test(tooltip)) {
         return true;
       }
 
       const image = tab.getAttribute?.("image") || tab.image || "";
-      if (/mail\.google\.com|google\.com.*mail/i.test(image)) {
+      if (/gmail/i.test(image)) {
         return true;
       }
 
@@ -850,6 +852,18 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
       for (const tab of gBrowser.tabs) {
         scanned++;
         if (!this.isGmailTab(tab)) {
+          if (this.gmailTabs.delete(tab)) {
+            // Claimed while its URL was unresolved (lazy/workspace tab) —
+            // now that it resolves elsewhere, release it and any badge.
+            this.boundTabs.delete(tab);
+            (tab.shadowRoot || tab)
+              .querySelector?.(".gmailpeek-badge")
+              ?.remove();
+            EPDiag.log("scan", "tab unclaimed", {
+              provider: "Gmail",
+              tab: EPDiag.tabInfo(tab),
+            });
+          }
           const info = EPDiag.tabInfo(tab);
           const candidate = /mail\.google\.com/i.test(info.url);
           if ((tab.pinned || tab.hasAttribute("zen-essential")) && candidate && !this.scanMisses.has(tab)) {
@@ -866,6 +880,13 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
           // Direct listeners: belt & suspenders in case delegation misses.
           tab.addEventListener("mouseenter", this.onHoverIn, false);
           tab.addEventListener("mouseleave", this.onHoverOut, false);
+        }
+      }
+      // Closed tabs stay in the set forever otherwise.
+      for (const tab of this.gmailTabs) {
+        if (!tab.isConnected) {
+          this.gmailTabs.delete(tab);
+          this.boundTabs.delete(tab);
         }
       }
       if (this.lastScanClaimed !== claimed) {
@@ -1545,6 +1566,17 @@ document.getElementById("email").addEventListener("click", () => copyReport(true
     }
 
     paintBadge(tab, count) {
+      // The feed await in refresh() can outlive a claim — a tab that has
+      // since navigated away (or was claimed while lazy and resolves to a
+      // non-Gmail page) must not carry our badge.
+      if (!this.isGmailTab(tab)) {
+        (tab.shadowRoot || tab)
+          .querySelector?.(".gmailpeek-badge")
+          ?.remove();
+        this.gmailTabs.delete(tab);
+        this.boundTabs.delete(tab);
+        return;
+      }
       EPDiag.log("badge", "paint", { count, tab: EPDiag.tabInfo(tab) });
       const host =
         tab.shadowRoot?.querySelector(".tab-icon-stack") ||

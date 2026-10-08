@@ -856,6 +856,43 @@ test("provider scans ignore unrelated pinned tabs and summarize only match chang
   assert.equal(diag.render(), first, "a stable scan does not add more noise");
 });
 
+test("Gmail releases a tab claimed while lazy once its URL resolves elsewhere", () => {
+  const peek = new GmailPeek();
+  const state = { url: "" };
+  const badge = { removed: false, remove() { this.removed = true; } };
+  const tab = {
+    pinned: true,
+    isConnected: true,
+    linkedBrowser: { get currentURI() { return { spec: state.url }; } },
+    hasAttribute: () => false,
+    getAttribute: name => (name === "label" ? "Inbox (3) - a@gmail.com" : null),
+    addEventListener() {},
+    querySelector: sel => (sel === ".gmailpeek-badge" ? badge : null),
+  };
+  gmailContext.gBrowser = { tabs: [tab] };
+  peek.scanTabs();
+  assert.ok(peek.gmailTabs.has(tab), "lazy tab with a Gmail title is claimed");
+  state.url = "https://www.reddit.com/r/zen_browser/";
+  peek.scanTabs();
+  assert.ok(!peek.gmailTabs.has(tab), "resolved non-Gmail URL unclaims it");
+  assert.ok(badge.removed, "stale badge is stripped");
+});
+
+test("Gmail title fallback ignores pages that merely mention Gmail", () => {
+  const peek = new GmailPeek();
+  const lazy = label => ({
+    pinned: true,
+    linkedBrowser: { get currentURI() { return { spec: "" }; } },
+    hasAttribute: () => false,
+    getAttribute: name => (name === "label" ? label : null),
+  });
+  assert.equal(peek.isGmailTab(lazy("Arc-style Gmail preview when you hover your pinned tab : r/GMail")), false);
+  assert.equal(peek.isGmailTab(lazy("How Gmail changed email - Wikipedia")), false);
+  assert.equal(peek.isGmailTab(lazy("Inbox (3) - person@gmail.com")), true);
+  assert.equal(peek.isGmailTab(lazy("person@work.com - Gmail")), true);
+  assert.equal(peek.isGmailTab(lazy("Gmail")), true);
+});
+
 test("every provider script carries the shared diagnostics core", () => {
   for (const f of ["gmail-peek.uc.js", "proton-peek.uc.js", "outlook-peek.uc.js", "icloud-peek.uc.js"]) {
     const src = readFileSync(new URL("./" + f, import.meta.url), "utf8");
